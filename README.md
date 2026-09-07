@@ -192,3 +192,16 @@ and install `bbb`. See [RELEASING.md](RELEASING.md) for publication and verifica
 API references: [GitHub issues](https://docs.github.com/en/rest/issues/issues),
 [issue comments](https://docs.github.com/en/rest/issues/comments).
 Licensed under [Apache-2.0](LICENSE).
+
+## Automatic releases
+
+Push a new `v*` version tag to run the complete **Publish packages** pipeline:
+Linux/macOS checks, native GitHub assets, then all five npm packages from the
+same tag and commit. No manual package dispatch is needed. The package job runs
+only after native publication succeeds and validates package contents and local
+installs before uploading. It does not wait for npm's public index to update.
+
+For recovery, rerun failed jobs or manually dispatch `publish-packages.yml` from
+the exact existing tag with `publish=true`. The default manual `publish=false`
+validates without uploading. Existing published bytes must match on retry.
+See [RELEASING.md](RELEASING.md) for details.

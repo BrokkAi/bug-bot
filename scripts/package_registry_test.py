@@ -48,14 +48,12 @@ class PackageRegistry(unittest.TestCase):
 
     def test_native_packages_publish_before_root(self):
         with patch.object(package_registry, "npm_exists", return_value=False), \
-                patch.object(package_registry, "wait_visible") as wait, \
                 patch.object(package_registry.subprocess, "run") as command:
             package_registry.run("publish", self.root)
             calls = [call.args[0] for call in command.call_args_list]
             self.assertEqual(len(calls), 5)
             self.assertTrue(all(call[:2] == ["npm", "publish"] for call in calls[:5]))
             self.assertTrue(calls[4][2].endswith("package-0.tgz"))
-            self.assertEqual(wait.call_count, 5)
 
     def test_identical_existing_packages_are_verified_without_upload(self):
         with patch.object(package_registry, "npm_exists", return_value=True), \
@@ -85,3 +83,17 @@ class PackageRegistry(unittest.TestCase):
                 else:
                     with self.assertRaises(urllib.error.HTTPError):
                         package_registry.fetch_json("https://registry.test")
+
+    def test_accepted_uploads_do_not_wait_for_public_indexes(self):
+        with patch.object(package_registry, "npm_exists", return_value=False) as exists, \
+                patch.object(package_registry.subprocess, "run") as command:
+            package_registry.run("publish", self.root)
+            self.assertEqual(command.call_count, 5)
+            self.assertEqual(exists.call_count, 5)  # Only the pre-upload conflict check.
+
+    def test_upload_failure_stops_before_publishing_the_launcher(self):
+        with patch.object(package_registry, "npm_exists", return_value=False), \
+                patch.object(package_registry.subprocess, "run", side_effect=package_registry.subprocess.CalledProcessError(1, "npm")) as command:
+            with self.assertRaises(package_registry.subprocess.CalledProcessError):
+                package_registry.run("publish", self.root)
+            self.assertEqual(command.call_count, 1)

@@ -7,7 +7,6 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -35,15 +34,6 @@ def npm_exists(package):
     if record.get("name") != package["name"] or record.get("version") != package["version"] or record.get("dist", {}).get("integrity") != package["integrity"]:
         raise ValueError(f"published npm package differs from staged bytes: {package['name']}")
     return True
-
-
-def wait_visible(check):
-    for attempt in range(30):
-        if check():
-            return
-        if attempt < 29:
-            time.sleep(2)
-    raise ValueError("published package did not become visible within 60 seconds; retry verification")
 
 
 def run(command, directory):
@@ -74,13 +64,15 @@ def run(command, directory):
             raise ValueError("publication is incomplete: an npm package is missing")
         print("All five npm packages match the staged bytes")
         return
+    # Submit platform packages before the root launcher. A successful upload
+    # can take time to appear in public indexes; visibility is checked only by
+    # the explicit verify command, not used as a release gate.
     for package in packages:
         if not existing[package["name"]]:
             subprocess.run(["npm", "publish", str((directory / "npm" / package["filename"]).resolve()),
                             "--access", "public", "--registry", "https://registry.npmjs.org",
                             "--tag", "next" if "-" in npm_version else "latest"], check=True)
-        wait_visible(lambda: npm_exists(package))
-    print("Published and verified npm packages")
+    print("Submitted npm packages; registry visibility may lag behind accepted uploads")
 
 
 def main():
