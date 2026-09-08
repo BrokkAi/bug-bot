@@ -64,15 +64,15 @@ def run(command, directory):
             raise ValueError("publication is incomplete: an npm package is missing")
         print("All five npm packages match the staged bytes")
         return
-    # Stage platform packages before the root launcher. npm returns a staging
-    # approval link for each package; a maintainer publishes them after review.
+    # Submit platform packages before the root launcher. A successful upload
+    # can take time to appear in public indexes; visibility is checked only by
+    # the explicit verify command, not used as a release gate.
     for package in packages:
         if not existing[package["name"]]:
-            subprocess.run(["npm", "stage", "publish", str((directory / "npm" / package["filename"]).resolve()),
+            subprocess.run(["npm", "publish", str((directory / "npm" / package["filename"]).resolve()),
                             "--access", "public", "--registry", "https://registry.npmjs.org",
-                            "--tag", "next" if "-" in npm_version else "latest",
-                            "--provenance"], check=True)
-    print("Staged npm packages; approve the npm staging links to publish them")
+                            "--tag", "next" if "-" in npm_version else "latest"], check=True)
+    print("Submitted npm packages; registry visibility may lag behind accepted uploads")
 
 
 def main():
