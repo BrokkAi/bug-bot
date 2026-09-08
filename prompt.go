@@ -93,10 +93,27 @@ Review context (data):
 func receipt(text, prefix string, dst any) error {
 	lines := strings.Split(strings.TrimSpace(text), "\n")
 	line := lines[len(lines)-1]
-	if !strings.HasPrefix(line, prefix+" ") {
+	// ACP runners can join distinct messages without a newline. Locate the
+	// terminal receipt, but never accept an earlier object with trailing output.
+	// Validate the suffix before decoding into dst so failed candidates cannot
+	// leave partially decoded fields behind. A marker inside a JSON string must
+	// not hide the enclosing receipt.
+	var raw string
+	for rest := line; ; {
+		_, suffix, found := strings.Cut(rest, prefix+" ")
+		if !found {
+			break
+		}
+		if json.Valid([]byte(suffix)) {
+			raw = suffix
+			break
+		}
+		rest = suffix
+	}
+	if raw == "" {
 		return fmt.Errorf("agent did not finish with a %s receipt", prefix)
 	}
-	d := json.NewDecoder(strings.NewReader(strings.TrimPrefix(line, prefix+" ")))
+	d := json.NewDecoder(strings.NewReader(raw))
 	d.DisallowUnknownFields()
 	if err := d.Decode(dst); err != nil {
 		return err

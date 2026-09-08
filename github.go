@@ -1,10 +1,14 @@
 package bugbot
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/textproto"
 	"net/url"
 	"sort"
 	"strconv"
@@ -30,14 +34,17 @@ type issueSource interface {
 type githubClient struct{ config Config }
 
 func (g githubClient) api(ctx context.Context, endpoint string, result any, fields ...string) error {
-	ctx, cancel := context.WithTimeout(ctx, time.Minute)
-	defer cancel()
-	args := []string{"gh", "api", "--hostname", g.config.GitHub.Host, endpoint}
-	out, err := osrun.Run(ctx, "", nil, append(args, fields...)...)
+	out, err := g.request(ctx, endpoint, fields...)
 	if err != nil {
 		return err
 	}
 	return json.Unmarshal([]byte(out), result)
+}
+func (g githubClient) request(ctx context.Context, endpoint string, fields ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	args := []string{"gh", "api", "--hostname", g.config.GitHub.Host, endpoint}
+	return osrun.Run(ctx, "", nil, append(args, fields...)...)
 }
 func (g githubClient) path(suffix string) string { return "repos/" + g.config.GitHubRepo() + suffix }
 
@@ -111,21 +118,76 @@ func issueBody(c *Candidate, commit string) string {
 	return fmt.Sprintf("## Problem\n\n%s\n\n## Reproduction\n\n%s\n\n## Expected behavior\n\n%s\n\n## Actual behavior\n\n%s\n\n## Affected source\n\n%s\n\n## Evidence\n\n%s\n\n## Independent review\n\n%s\n\nInvestigated at commit `%s` by bug-bot.\n\n%s\n", f.RootCause, f.Reproduction, f.Expected, f.Actual, strings.Join(f.Files, "\n"), strings.Join(f.Evidence, "\n\n"), c.Review, commit, marker(c.RequestID))
 }
 func (g githubClient) create(ctx context.Context, c *Candidate, commit string) (*Issue, error) {
-	fields := []string{"--method", "POST", "-f", "title=" + c.Finding.Title, "-f", "body=" + issueBody(c, commit)}
+	fields := []string{"--method", "POST", "--include", "-f", "title=" + c.Finding.Title, "-f", "body=" + issueBody(c, commit)}
 	for _, l := range g.config.Labels {
 		fields = append(fields, "-f", "labels[]="+l)
 	}
-	var i Issue
-	if err := g.api(ctx, g.path("/issues"), &i, fields...); err != nil {
+	out, runErr := g.request(ctx, g.path("/issues"), fields...)
+	i, err := createdResponse(out, runErr)
+	if err != nil {
 		return nil, err
 	}
-	if err := validateCreated(g.config, c, &i); err != nil {
+	if err := validateCreated(g.config, c, i); err != nil {
 		return nil, err
 	}
-	return &i, nil
+	return i, nil
 }
+
+// Only a confirmed rejection can make a create safe to retry. Missing responses,
+// timeouts, server errors and malformed success bodies remain ambiguous.
+type rejectedCreateError struct{ error }
+
+func (e *rejectedCreateError) Unwrap() error { return e.error }
+
+func createdResponse(out string, runErr error) (*Issue, error) {
+	reader := textproto.NewReader(bufio.NewReader(strings.NewReader(out)))
+	line, err := reader.ReadLine()
+	if err != nil {
+		return nil, errors.Join(runErr, fmt.Errorf("missing create HTTP status: %w", err))
+	}
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		return nil, errors.Join(runErr, errors.New("invalid create HTTP status"))
+	}
+	_, _, protocolOK := http.ParseHTTPVersion(fields[0])
+	status, err := strconv.Atoi(fields[1])
+	if !protocolOK || err != nil || len(fields[1]) != 3 || status < 100 || status > 599 {
+		return nil, errors.Join(runErr, errors.New("invalid create HTTP status"))
+	}
+	if _, err := reader.ReadMIMEHeader(); err != nil {
+		return nil, errors.Join(runErr, fmt.Errorf("invalid create HTTP headers: %w", err))
+	}
+	switch status {
+	case 400, 401, 403, 404, 405, 409, 410, 411, 413, 414, 415, 422, 429:
+		return nil, &rejectedCreateError{errors.Join(fmt.Errorf("GitHub rejected issue creation (HTTP %d)", status), runErr)}
+	}
+	if runErr != nil {
+		return nil, runErr
+	}
+	if status != http.StatusCreated {
+		return nil, fmt.Errorf("unexpected create HTTP status %d", status)
+	}
+	// gh has already decoded HTTP transfer/content encodings. Read its printed
+	// JSON directly instead of applying the response headers' encodings again.
+	body, err := io.ReadAll(reader.R)
+	if err != nil {
+		return nil, err
+	}
+	var issue Issue
+	if err := json.Unmarshal(body, &issue); err != nil {
+		return nil, err
+	}
+	return &issue, nil
+}
+
 func validateCreated(cfg Config, c *Candidate, i *Issue) error {
-	if i == nil || i.Number < 1 || i.URL != fmt.Sprintf("https://%s/%s/issues/%d", cfg.GitHub.Host, cfg.GitHubRepo(), i.Number) || !strings.Contains(i.Body, marker(c.RequestID)) || len(i.PullRequest) > 0 {
+	if i == nil || i.Number < 1 || !strings.Contains(i.Body, marker(c.RequestID)) || (len(i.PullRequest) > 0 && string(i.PullRequest) != "null") {
+		return errors.New("created issue does not match repository and finding")
+	}
+	u, err := url.Parse(i.URL)
+	suffix := fmt.Sprintf("/issues/%d", i.Number)
+	if err != nil || u.Scheme != "https" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawPath != "" ||
+		!strings.EqualFold(u.Host, cfg.GitHub.Host) || !strings.HasSuffix(u.Path, suffix) || !strings.EqualFold(strings.TrimSuffix(u.Path, suffix), "/"+cfg.GitHubRepo()) {
 		return errors.New("created issue does not match repository and finding")
 	}
 	return nil

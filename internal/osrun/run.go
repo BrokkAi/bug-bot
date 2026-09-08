@@ -81,11 +81,13 @@ func Run(ctx context.Context, dir string, env map[string]string, args ...string)
 	err := cmd.Run()
 	text, cut := stdout.Text()
 	detail, _ := stderr.Text()
+	if cut {
+		// A tail is not a complete response, even when the process also failed.
+		// In particular, callers must not interpret a body fragment as headers.
+		return "", errors.Join(fmt.Errorf("%s output exceeded 8 MiB", args[0]), err)
+	}
 	if err != nil {
 		return text, fmt.Errorf("%s: %w\n%s\n%s", args[0], err, detail, text)
-	}
-	if cut {
-		return "", fmt.Errorf("%s output exceeded 8 MiB", args[0])
 	}
 	return strings.TrimSpace(text), nil
 }

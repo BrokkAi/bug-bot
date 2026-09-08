@@ -162,6 +162,13 @@ refuses to send another create request. Run `once` to try reconciliation again.
 If it never appears, inspect GitHub and the saved state before repairing the
 pending entry; `retry` intentionally cannot blindly resend an ambiguous request.
 
+Confirmed HTTP rejections, such as validation or permission failures, keep the
+candidate pending. Correct the request or access problem, then run `once` to
+resume, or `retry --once` if the attempt budget is exhausted. Timeouts, server
+errors, and incomplete responses still require marker reconciliation. Older
+versions saved every create error as ambiguous; those existing `posting` entries
+still require inspection when no marker appears.
+
 A per-repository local lock coordinates instances across branches and config
 paths using the same state home. Different machines/accounts and simultaneous
 human reports cannot be locked atomically with GitHub issue creation. Run one

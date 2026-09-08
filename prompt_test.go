@@ -31,6 +31,24 @@ func TestReceiptsRejectMissingEvidenceAndPartialReview(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestTerminalReceiptWithJoinedMessages(t *testing.T) {
+	valid := `BUG_REVIEW {"verdict":"new","reason":"Verified; BUG_REVIEW { is the receipt marker","checked":[]}`
+	for _, text := range []string{valid, "Completed the reproduction." + valid, "Earlier BUG_REVIEW example." + valid, "Commentary\n" + valid + "\n"} {
+		if _, err := parseReview(text, nil); err != nil {
+			t.Errorf("valid final receipt rejected: %v", err)
+		}
+	}
+	for _, text := range []string{
+		valid + " superseded", valid + "\nActually, I cannot verify this.", valid + "\n```",
+		valid + `BUG_REVIEW {"verdict":`, valid + ` {"verdict":"invalid"}`,
+		`Progress.BUG_REVIEW {"verdict":"new","reason":"Verified","checked":[],"unexpected":true}`,
+	} {
+		if _, err := parseReview(text, nil); err == nil {
+			t.Errorf("accepted nonterminal or malformed receipt: %s", text)
+		}
+	}
+}
 func TestReviewChunksPreserveAllTextAndIssueNumbers(t *testing.T) {
 	body := strings.Repeat("é\n", 30000)
 	issues := []Issue{{Number: 1, Title: "Large", Body: body, Comments: []string{"critical evidence"}}}

@@ -2,8 +2,10 @@ package bugbot
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -20,12 +22,14 @@ assert args[:3] == ['api', '--hostname', 'github.com']
 url = urlsplit(args[3]); q = parse_qs(url.query)
 mode = os.environ.get('BUG_BOT_TEST_MODE', '')
 if '--method' in args:
+    assert '--include' in args
     assert args[args.index('--method')+1] == 'POST'
     assert url.path == 'repos/o/r/issues'
     fields = [args[n+1] for n,x in enumerate(args) if x == '-f']
     body = next(x[5:] for x in fields if x.startswith('body='))
     title = next(x[6:] for x in fields if x.startswith('title='))
     assert 'labels[]=bug' in fields and 'labels[]=triage' in fields
+    print('HTTP/2.0 201 Created\r\nContent-Type: application/json\r\n\r\n', end='')
     print(json.dumps(dict(number=42, title=title, body=body, state='open', html_url='https://github.com/o/r/issues/42' if mode != 'wrong_repo' else 'https://github.com/other/repo/issues/42')))
     sys.exit()
 page = int(q['page'][0]); assert q['per_page'] == ['100']
@@ -91,5 +95,70 @@ func TestGitHubCreateFieldsAndIdentity(t *testing.T) {
 	t.Setenv("BUG_BOT_TEST_MODE", "wrong_repo")
 	if _, err := g.create(context.Background(), c, "0123456789abcdef0123456789abcdef01234567"); err == nil {
 		t.Fatal("wrong repository response accepted")
+	}
+}
+
+func TestCreateResponseDistinguishesRejectionFromUnknownOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name, output string
+		runErr       error
+		rejected     bool
+	}{
+		{"validation", "HTTP/2.0 422 Unprocessable Entity\nContent-Type: application/json\r\n\r\n{}", errors.New("exit 1"), true},
+		{"forbidden", "HTTP/1.1 403 Forbidden\r\n\r\n{}", errors.New("exit 1"), true},
+		{"rate limit", "HTTP/2.0 429 Too Many Requests\r\n\r\n{}", errors.New("exit 1"), true},
+		{"server error", "HTTP/2.0 500 Internal Server Error\r\n\r\n{}", errors.New("exit 1"), false},
+		{"request timeout", "HTTP/1.1 408 Request Timeout\r\n\r\n{}", errors.New("exit 1"), false},
+		{"proxy client close", "HTTP/1.1 499 Client Closed Request\r\n\r\n{}", errors.New("exit 1"), false},
+		{"lost response", "", errors.New("connection lost"), false},
+		{"stderr is not status", "", errors.New("gh: HTTP 422"), false},
+		{"body is not status", `{"message":"HTTP/2.0 422 Unprocessable Entity"}`, errors.New("exit 1"), false},
+		{"incomplete headers", "HTTP/2.0 422 Unprocessable Entity\r\nContent-Type:", errors.New("connection lost"), false},
+		{"invalid protocol", "HTTP/garbage 422 Rejected\r\n\r\n{}", errors.New("exit 1"), false},
+		{"invalid status", "HTTP/2.0 0422 Rejected\r\n\r\n{}", errors.New("exit 1"), false},
+		{"malformed success", "HTTP/2.0 201 Created\r\n\r\n{", nil, false},
+		{"failed successful response", "HTTP/2.0 201 Created\r\n\r\n{}", errors.New("connection lost"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := createdResponse(tc.output, tc.runErr)
+			var rejected *rejectedCreateError
+			if err == nil || errors.As(err, &rejected) != tc.rejected {
+				t.Fatalf("got %v, want rejected=%t", err, tc.rejected)
+			}
+		})
+	}
+	// gh prints a decoded body even when the original response was chunked.
+	i, err := createdResponse("HTTP/1.1 201 Created\r\nTransfer-Encoding: chunked\r\n\r\n{\"number\":42}", nil)
+	if err != nil || i.Number != 42 {
+		t.Fatalf("decoded response: %+v %v", i, err)
+	}
+}
+
+func TestCreatedIdentityAllowsCanonicalCaseOnly(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.GitHub.Repo = "Owner/Repo"
+	c := &Candidate{RequestID: strings.Repeat("a", 32)}
+	for _, tc := range []struct {
+		url string
+		ok  bool
+	}{
+		{"https://github.com/owner/repo/issues/42", true},
+		{"https://GITHUB.COM/OWNER/REPO/issues/42", true},
+		{"https://github.com/other/repo/issues/42", false},
+		{"https://other.example/owner/repo/issues/42", false},
+		{"http://github.com/owner/repo/issues/42", false},
+		{"https://user@github.com/owner/repo/issues/42", false},
+		{"https://github.com/owner/repo/pulls/42", false},
+		{"https://github.com/owner/repo/issues/43", false},
+		{"https://github.com/owner/repo/issues/042", false},
+		{"https://github.com/owner/repo/issues/42?query=1", false},
+		{"https://github.com/owner/repo/issues/42?", false},
+		{"https://github.com/owner/repo/issues/42#comment", false},
+		{"https://github.com/%6fwner/repo/issues/42", false},
+	} {
+		i := &Issue{Number: 42, URL: tc.url, Body: marker(c.RequestID)}
+		if err := validateCreated(cfg, c, i); (err == nil) != tc.ok {
+			t.Errorf("%s: %v", tc.url, err)
+		}
 	}
 }

@@ -420,6 +420,11 @@ func (e engine) reviewAndPublish(ctx context.Context, s *State, g, w checkout, a
 		e.report(s, "publishing", c.Finding.Title)
 		i, err := e.source.create(ctx, c, s.Scan.Commit)
 		if err != nil {
+			var rejected *rejectedCreateError
+			if errors.As(err, &rejected) {
+				c.Status = "pending"
+				return errors.Join(err, e.save(s))
+			}
 			return err
 		}
 		if err := validateCreated(e.config, c, i); err != nil {
