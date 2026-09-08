@@ -98,4 +98,6 @@ jobs:
           if-no-files-found: error
       - name: Submit validated packages
         if: github.event_name == 'push' || inputs.publish
+        env:
+          NODE_AUTH_TOKEN: ''
         run: python3 scripts/package_registry.py publish dist/packages
