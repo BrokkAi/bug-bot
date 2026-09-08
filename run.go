@@ -18,11 +18,12 @@ import (
 )
 
 type engine struct {
-	config Config
-	source issueSource
-	log    *slog.Logger
-	agent  func(Config) Agent
-	now    func() time.Time
+	config  Config
+	source  issueSource
+	log     *slog.Logger
+	agent   func(Config) Agent
+	now     func() time.Time
+	observe func(Progress)
 }
 
 func Run(ctx context.Context, cfg Config, log *slog.Logger, once bool) error {
@@ -47,7 +48,9 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger, once bool) error {
 	if s == nil {
 		s = newState(cfg)
 	}
-	e := engine{cfg, githubClient{cfg}, log, func(c Config) Agent { return agentProcess{c, log} }, time.Now}
+	observe, _ := ctx.Value(progressKey{}).(func(Progress))
+	e := engine{config: cfg, source: githubClient{cfg}, log: log, agent: func(c Config) Agent { return agentProcess{c, log} }, now: time.Now, observe: observe}
+	e.report(s, "starting", "Loading saved scan")
 	for {
 		err := e.step(ctx, s, once)
 		var setup *runner.SetupError
@@ -56,6 +59,22 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger, once bool) error {
 		}
 		if err != nil {
 			log.Error("Bug scan paused", "error", err)
+			phase := "paused"
+			if s.Scan != nil {
+				if s.Scan.Tries >= cfg.Attempts {
+					phase = "blocked"
+				}
+				for _, c := range s.Scan.Candidates {
+					if c.Status == "posting" {
+						phase = "blocked"
+					}
+				}
+			}
+			e.report(s, phase, err.Error())
+		} else if s.Scan != nil && s.Scan.Failure != "" {
+			e.report(s, "paused", s.Scan.Failure)
+		} else {
+			e.report(s, "waiting", "Next scan")
 		}
 		if err := pause(ctx, time.Duration(cfg.Poll)); err != nil {
 			return err
@@ -72,7 +91,13 @@ func pause(ctx context.Context, d time.Duration) error {
 		return nil
 	}
 }
-func (e engine) save(s *State) error { return writeState(e.config, s) }
+func (e engine) save(s *State) error {
+	if err := writeState(e.config, s); err != nil {
+		return err
+	}
+	e.report(s, "", "")
+	return nil
+}
 func (e engine) step(ctx context.Context, s *State, force bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -81,6 +106,7 @@ func (e engine) step(ctx context.Context, s *State, force bool) error {
 	if s.Scan != nil {
 		for _, c := range s.Scan.Candidates {
 			if c.Status == "posting" {
+				e.report(s, "reconciling", "Checking an interrupted issue publication")
 				issues, err := e.source.issues(ctx)
 				if err != nil {
 					return err
@@ -127,6 +153,7 @@ func (e engine) step(ctx context.Context, s *State, force bool) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(e.config.Timeout))
 	defer cancel()
+	e.report(s, "fetching", "Fetching "+e.config.Branch)
 	g := checkout{e.config}
 	if err := g.open(ctx); err != nil {
 		return err
@@ -155,15 +182,18 @@ func (e engine) step(ctx context.Context, s *State, force bool) error {
 			return err
 		}
 	}
+	e.report(s, "preparing", "Preparing isolated scan workspace")
 	w, err := g.prepare(ctx, s.Scan)
 	if err != nil {
 		return err
 	}
+	s.Scan.Failure = ""
 	s.Scan.Tries++
 	s.Scan.RetryAt = e.now().Add(time.Duration(e.config.RetryDelay))
 	if err := e.save(s); err != nil {
 		return err
 	}
+	e.report(s, "attempt", "Loading GitHub issue history")
 	err = e.attempt(ctx, s, g, w)
 	if err == nil || s.Scan == nil {
 		return err
@@ -197,6 +227,7 @@ func (e engine) attempt(ctx context.Context, s *State, g, w checkout) error {
 		if err := errors.Join(encodeErr, file.Close()); err != nil {
 			return err
 		}
+		e.report(s, "investigating", "Investigating new bugs")
 		e.log.Info("Investigating new bugs", "commit", s.Scan.Commit, "issues", len(issues), "directory", w.config.Directory)
 		text, err := a.Execute(ctx, scanPrompt(e.config, s, path))
 		if err != nil {
@@ -206,6 +237,7 @@ func (e engine) attempt(ctx context.Context, s *State, g, w checkout) error {
 		if err != nil {
 			return err
 		}
+		e.report(s, "verifying", "Checking discovered findings and workspace")
 		if err := w.verify(ctx, s.Scan); err != nil {
 			return err
 		}
@@ -281,6 +313,7 @@ func reviewChunks(issues []Issue) [][]Issue {
 func issueDigest(i Issue) [32]byte { b, _ := json.Marshal(i); return sha256.Sum256(b) }
 
 func (e engine) reviewAndPublish(ctx context.Context, s *State, g, w checkout, a Agent, c *Candidate) error {
+	e.report(s, "reviewing", "Refreshing issue history: "+c.Finding.Title)
 	checked := map[int][32]byte{}
 	validated := false
 	// Refresh until every currently visible issue version has been reviewed. If the
@@ -297,7 +330,9 @@ func (e engine) reviewAndPublish(ctx context.Context, s *State, g, w checkout, a
 			}
 		}
 		if len(remaining) > 0 || !validated {
-			for _, chunk := range reviewChunks(remaining) {
+			chunks := reviewChunks(remaining)
+			for index, chunk := range chunks {
+				e.report(s, "reviewing", fmt.Sprintf("%s (batch %d/%d)", c.Finding.Title, index+1, len(chunks)))
 				text, err := a.Execute(ctx, reviewPrompt(c.Finding, s.Scan.Commit, chunk, !validated))
 				if err != nil {
 					return err
@@ -330,6 +365,7 @@ func (e engine) reviewAndPublish(ctx context.Context, s *State, g, w checkout, a
 			}
 			continue
 		}
+		e.report(s, "verifying", "Verifying source and evidence: "+c.Finding.Title)
 		if err := g.open(ctx); err != nil {
 			return err
 		}
@@ -381,6 +417,7 @@ func (e engine) reviewAndPublish(ctx context.Context, s *State, g, w checkout, a
 			c.Status = "pending"
 			return err
 		}
+		e.report(s, "publishing", c.Finding.Title)
 		i, err := e.source.create(ctx, c, s.Scan.Commit)
 		if err != nil {
 			return err
@@ -396,6 +433,16 @@ func (e engine) reviewAndPublish(ctx context.Context, s *State, g, w checkout, a
 	return errors.New("issue history kept changing during review; refusing stale duplicate check")
 }
 func (e engine) finish(s *State) error {
+	summary := s.Scan.Summary
+	phase := "complete"
+	if !s.Scan.Discovered {
+		phase = "discarded"
+	}
+	for _, c := range s.Scan.Candidates {
+		if c.Status == "stale" {
+			phase = "discarded"
+		}
+	}
 	s.History = append(s.History, s.Scan.Commit+": "+s.Scan.Summary)
 	if len(s.History) > 20 {
 		s.History = s.History[len(s.History)-20:]
@@ -403,5 +450,9 @@ func (e engine) finish(s *State) error {
 	s.Completed = append(s.Completed, s.Scan.Candidates...)
 	s.Scan = nil
 	s.NextScan = e.now().Add(time.Duration(e.config.Poll))
-	return e.save(s)
+	if err := e.save(s); err != nil {
+		return err
+	}
+	e.report(s, phase, summary)
+	return nil
 }

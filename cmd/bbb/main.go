@@ -15,22 +15,17 @@ import (
 	"runtime/debug"
 	"strings"
 	"syscall"
+
+	"golang.org/x/term"
 )
 
 // version is replaced with the release tag when building published binaries.
 var version = "dev"
 
 func main() {
-	log := slog.New(newConsole(os.Stderr))
-	for _, arg := range os.Args[1:] {
-		if arg == "--json" || arg == "-json" || arg == "--json=true" {
-			log = slog.New(slog.NewJSONHandler(os.Stderr, nil))
-		}
-	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	if err := execute(ctx, os.Args[1:], log); err != nil && ctx.Err() == nil {
-		log.Error("Stopped", "error", err)
+	if err := execute(ctx, os.Args[1:], nil); err != nil && ctx.Err() == nil && !errors.Is(err, context.Canceled) {
 		os.Exit(1)
 	}
 }
@@ -40,7 +35,16 @@ func execute(ctx context.Context, args []string, log *slog.Logger) error {
 
 type runFunc func(context.Context, bot.Config, *slog.Logger, bool) error
 
-func executeWithRun(ctx context.Context, args []string, log *slog.Logger, run runFunc) error {
+func executeWithRun(ctx context.Context, args []string, log *slog.Logger, run runFunc) (result error) {
+	ownOutput := log == nil
+	if ownOutput {
+		log = slog.New(newConsole(os.Stderr))
+		defer func() {
+			if result != nil && ctx.Err() == nil && !errors.Is(result, context.Canceled) {
+				log.Error("Stopped", "error", result)
+			}
+		}()
+	}
 	mode := "run"
 	if len(args) > 0 {
 		switch args[0] {
@@ -65,7 +69,8 @@ func executeWithRun(ctx context.Context, args []string, log *slog.Logger, run ru
 	focus := fs.String("focus", "", "area or bug class to investigate")
 	dryRun := fs.Bool("dry-run", false, "find and review bugs without creating issues")
 	once := fs.Bool("once", mode == "once", "run one scan (or resume a saved scan), then exit")
-	fs.Bool("json", false, "structured logs and status")
+	jsonOutput := fs.Bool("json", false, "structured logs (disables the dashboard)")
+	plain := fs.Bool("plain", false, "scrolling console output (disables the dashboard)")
 	defaults := bot.DefaultConfig()
 	poll := fs.Duration("poll", 0, "poll interval, e.g. 5m")
 	timeout := fs.Duration("timeout", 0, "budget for each attempt, e.g. 2h")
@@ -78,6 +83,12 @@ func executeWithRun(ctx context.Context, args []string, log *slog.Logger, run ru
 			return nil
 		}
 		return err
+	}
+	if ownOutput && *jsonOutput {
+		log = slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	}
+	if *plain && *jsonOutput {
+		return errors.New("--plain and --json cannot be used together")
 	}
 	if fs.NArg() > 1 {
 		return errors.New("pass one repository path or URL")
@@ -156,6 +167,9 @@ func executeWithRun(ctx context.Context, args []string, log *slog.Logger, run ru
 		if err := bot.Retry(cfg); err != nil {
 			return err
 		}
+	}
+	if ownOutput && dashboardEnabled(*plain, *jsonOutput, term.IsTerminal(int(os.Stdin.Fd())), term.IsTerminal(int(os.Stderr.Fd())), os.Getenv("TERM")) {
+		return runDashboard(ctx, cfg, *once, run, os.Stdin, os.Stderr)
 	}
 	log.Info("Scanning for new bugs", "repository", cfg.GitHubRepo(), "branch", cfg.Branch, "checkout", cfg.Directory, "state", cfg.StateDirectory)
 	return run(ctx, cfg, log, *once)

@@ -44,6 +44,7 @@ From a source checkout:
 ```sh
 make build
 ./bin/bbb /path/to/your-repo
+./bin/bbb /path/to/your-repo --plain
 ./bin/bbb once /path/to/your-repo --dry-run
 ./bin/bbb once /path/to/your-repo --focus "parser and input validation"
 ./bin/bbb /path/to/your-repo --max-issues 2 --label bug
@@ -68,6 +69,47 @@ Explicit `--agent` commands are used as supplied; repeat `--agent-arg` for argum
 Starting `bbb` authorizes unattended local investigation, test execution, and
 creation of issues for the selected repository. `--dry-run` performs discovery
 and review, prints the proposed issue bodies, and saves them without filing.
+
+## Terminal dashboard
+
+Interactive runs show a live dashboard by default. It fits the current terminal
+or tmux pane, adjusts when the pane is resized, and keeps the repository and
+current task visible. Each pane still runs one repository.
+
+```sh
+bbb /path/to/repo           # live dashboard in an interactive terminal
+bbb /path/to/repo --plain   # scrolling console output and agent transcript
+bbb /path/to/repo --json    # structured logs for tools and log collectors
+```
+
+The overview shows the repository, branch and commit, scan stage, active tool,
+uptime, attempt budget, and next check or retry countdown. Larger panes also
+show the selected model, reasoning effort, and investigation focus.
+
+**Saved** counts cover findings in the configured repository/branch state,
+including the current scan: found, filed, duplicate, pending, dry run, and skipped
+(invalid, uncertain, or stale). **Run** counters start at zero each time the
+process starts: completed scans, attempts, agent starts, tools, and error log
+events. A discovered finding is counted as filed only after publication is
+confirmed. Findings restored after restarting are included in saved totals.
+
+- `1`, `2`, `3` or `Tab`: switch between overview, findings, and activity.
+- `↑` / `↓` or `k` / `j`: browse findings or scroll activity.
+- `Enter`: inspect the selected finding, issue URL, reproduction, and review.
+- `Esc`: return from finding details. `Page Up` / `Page Down` scroll details.
+- `g` / `G`: jump to the start/end; `G` resumes following live activity.
+- `q` or `Ctrl+C`: stop the bot and its active agent, then restore the terminal.
+
+The finding browser shows the latest 200 findings, while totals include all saved
+findings. The activity view keeps recent output; full agent transcripts remain
+under the state directory. On exit, a short summary and new finding URLs stay in
+the terminal. `once` exits after its scan, and dry runs also print proposed finding
+details on exit.
+
+Piped input, redirected stderr, and `TERM=dumb` use scrolling output automatically.
+`--plain` and `--json` disable the dashboard and are mutually exclusive.
+`NO_COLOR` disables dashboard colors. `status`, `version`, and help keep their
+existing output and never open the dashboard.
 
 ## How it works
 
@@ -186,7 +228,7 @@ node --test --test-isolation=none npm/bbb.test.cjs
 Tests use local Git fixtures and simulated ACP/GitHub outcomes; they do not run
 a paid model or create real issues. They cover semantic closed duplicates,
 same-title distinct bugs, concurrent reports, partial histories, source changes,
-dry runs, retries, ambiguous POSTs, receipt coverage, configuration, and locks.
+dry runs, retries, ambiguous POSTs, receipt coverage, configuration, locks, progress snapshots, dashboard resizing, and terminal cleanup.
 
 The inherited release workflow packages Linux/macOS amd64/arm64 archives with
 checksums. The npm launcher and packaging workflow target `@brokkai/bug-bot`
