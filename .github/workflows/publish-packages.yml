@@ -59,11 +59,15 @@ jobs:
           persist-credentials: false
           ref: master
           path: .publisher-source
-          sparse-checkout: scripts/package_registry.py
+          sparse-checkout: |
+            scripts/package_registry.py
+            scripts/package_registry_test.py
           sparse-checkout-cone-mode: false
       - name: Use the current publisher for manual retries
         if: github.event_name == 'workflow_dispatch'
-        run: cp .publisher-source/scripts/package_registry.py scripts/package_registry.py
+        run: |
+          cp .publisher-source/scripts/package_registry.py scripts/package_registry.py
+          cp .publisher-source/scripts/package_registry_test.py scripts/package_registry_test.py
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
