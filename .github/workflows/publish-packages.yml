@@ -42,10 +42,16 @@ jobs:
         env:
           RELEASE_REF: ${{ github.ref }}
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: test "$RELEASE_REF" = "refs/tags/$RELEASE_TAG"
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            test "$RELEASE_REF" = "refs/tags/$RELEASE_TAG"
+          else
+            test "$RELEASE_REF" = refs/heads/master
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          ref: ${{ inputs.tag || github.ref_name }}
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
@@ -76,6 +82,4 @@ jobs:
           if-no-files-found: error
       - name: Submit validated packages
         if: github.event_name == 'push' || inputs.publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: python3 scripts/package_registry.py publish dist/packages

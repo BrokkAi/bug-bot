@@ -71,7 +71,8 @@ def run(command, directory):
         if not existing[package["name"]]:
             subprocess.run(["npm", "publish", str((directory / "npm" / package["filename"]).resolve()),
                             "--access", "public", "--registry", "https://registry.npmjs.org",
-                            "--tag", "next" if "-" in npm_version else "latest"], check=True)
+                            "--tag", "next" if "-" in npm_version else "latest",
+                            "--provenance"], check=True)
     print("Submitted npm packages; registry visibility may lag behind accepted uploads")
 
 
