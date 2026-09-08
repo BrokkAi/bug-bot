@@ -49,6 +49,7 @@ make build
 ./bin/bbb /path/to/your-repo --max-issues 2 --label bug
 ./bin/bbb /path/to/your-repo --model YOUR_MODEL_ID --effort low
 ./bin/bbb status /path/to/your-repo
+./bin/bbb version
 ./bin/bbb retry /path/to/your-repo --once
 ```
 
@@ -56,6 +57,8 @@ Source builds require Go 1.27.1. To install the local source as `bbb`, run
 `go install ./cmd/bbb` and put your Go bin directory on `PATH`.
 Running `bbb` from inside any target repository discovers its remote and default
 branch. A Git URL also works. Flags can precede or follow the repository argument.
+
+`bbb version` prints the embedded release tag. Local builds report `dev`; binaries installed with `go install ...@version` report the module version.
 
 Runtime requirements: Git, authenticated `gh` with repository/issue read and
 issue creation access, and an authenticated ACP agent. By default it uses an

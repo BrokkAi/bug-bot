@@ -7,13 +7,18 @@ import (
 	"flag"
 	"fmt"
 	bot "github.com/BrokkAi/bug-bot"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 )
+
+// version is replaced with the release tag when building published binaries.
+var version = "dev"
 
 func main() {
 	log := slog.New(newConsole(os.Stderr))
@@ -39,6 +44,8 @@ func executeWithRun(ctx context.Context, args []string, log *slog.Logger, run ru
 	mode := "run"
 	if len(args) > 0 {
 		switch args[0] {
+		case "version", "--version", "-v":
+			return versionCommand(args[1:], os.Stdout)
 		case "run", "once", "status", "retry":
 			mode = args[0]
 			args = args[1:]
@@ -46,7 +53,7 @@ func executeWithRun(ctx context.Context, args []string, log *slog.Logger, run ru
 	}
 	fs := flag.NewFlagSet("bbb", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "Usage: bbb [run|once|status|retry] [repository path or URL] [options]\n\nFind reproducible bugs and file new GitHub issues without duplicates. No config file is required.")
+		fmt.Fprintln(fs.Output(), "Usage: bbb [run|once|status|retry|version] [repository path or URL] [options]\n\nFind reproducible bugs and file new GitHub issues without duplicates. No config file is required.")
 		fs.PrintDefaults()
 	}
 	file := fs.String("config", "", "optional JSON configuration")
@@ -152,6 +159,24 @@ func executeWithRun(ctx context.Context, args []string, log *slog.Logger, run ru
 	}
 	log.Info("Scanning for new bugs", "repository", cfg.GitHubRepo(), "branch", cfg.Branch, "checkout", cfg.Directory, "state", cfg.StateDirectory)
 	return run(ctx, cfg, log, *once)
+}
+
+func versionCommand(args []string, output io.Writer) error {
+	if len(args) != 0 {
+		return errors.New("version does not accept arguments")
+	}
+	_, err := fmt.Fprintln(output, buildVersion())
+	return err
+}
+
+func buildVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return version
 }
 
 // Accept the repository before or after flags, as users expect from CLI tools.
