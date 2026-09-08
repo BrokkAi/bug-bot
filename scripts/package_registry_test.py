@@ -52,9 +52,9 @@ class PackageRegistry(unittest.TestCase):
             package_registry.run("publish", self.root)
             calls = [call.args[0] for call in command.call_args_list]
             self.assertEqual(len(calls), 5)
-            self.assertTrue(all(call[:2] == ["npm", "publish"] for call in calls[:5]))
+            self.assertTrue(all(call[:3] == ["npm", "stage", "publish"] for call in calls[:5]))
             self.assertTrue(all("--provenance" in call for call in calls[:5]))
-            self.assertTrue(calls[4][2].endswith("package-0.tgz"))
+            self.assertTrue(calls[4][3].endswith("package-0.tgz"))
 
     def test_identical_existing_packages_are_verified_without_upload(self):
         with patch.object(package_registry, "npm_exists", return_value=True), \

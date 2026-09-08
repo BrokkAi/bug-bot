@@ -52,6 +52,18 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.tag || github.ref_name }}
+      - name: Load the current publisher for manual retries
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: master
+          path: .publisher-source
+          sparse-checkout: scripts/package_registry.py
+          sparse-checkout-cone-mode: false
+      - name: Use the current publisher for manual retries
+        if: github.event_name == 'workflow_dispatch'
+        run: cp .publisher-source/scripts/package_registry.py scripts/package_registry.py
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
