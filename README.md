@@ -243,8 +243,6 @@ and install `bbb`. See [RELEASING.md](RELEASING.md) for publication and verifica
 
 API references: [GitHub issues](https://docs.github.com/en/rest/issues/issues),
 [issue comments](https://docs.github.com/en/rest/issues/comments).
-Licensed under [Apache-2.0](LICENSE).
-
 ## Automatic releases
 
 Push a new `v*` version tag to run the complete **Publish packages** pipeline:
@@ -257,3 +255,15 @@ For recovery, rerun failed jobs or manually dispatch `publish-packages.yml` from
 the exact existing tag with `publish=true`. The default manual `publish=false`
 validates without uploading. Existing published bytes must match on retry.
 See [RELEASING.md](RELEASING.md) for details.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and our
+[Code of Conduct](CODE_OF_CONDUCT.md). Report vulnerabilities privately using
+[SECURITY.md](SECURITY.md).
+
+## License
+
+Licensed under [Apache-2.0](LICENSE). See [NOTICE](NOTICE) for project
+attribution and [licenses/README.md](licenses/README.md) for dependency terms,
+third-party notices, and the license review process.
