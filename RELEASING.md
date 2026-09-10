@@ -1,43 +1,110 @@
 # Releasing bug-bot
 
-Run `make check build`, inspect `git diff`, and commit the complete change.
-The shared ACP dependency must be a published version, with no local replace
-or workspace override needed to build. Keep `go.mod` and `go.sum` committed.
+Release preparation goes through a topic-branch PR into `master`. Fetch and merge
+concurrent `master` changes, pass CI, merge the PR, and use its actual merged
+commit. Never move an existing release tag. The next version after v0.2.1 is
+v0.2.2; versions come from the proposed semver tag, not a source manifest.
 
-Push master and a new semver tag such as `v0.3.1`. That is the only release
-trigger needed. `publish-packages.yml` runs Linux/macOS CI through the reusable
-`release.yml`, builds and publishes the native GitHub assets, then builds/tests
-and uploads all five npm packages at the exact same tag and commit. A failed
-native release prevents npm publication. Follow the **Publish packages** run for
-the complete result. npm's trusted publisher remains `publish-packages.yml` in
-the `packages-publish` environment.
+## Destinations and order
 
-The installer expects `brokk-bug-bot-VERSION-OS-ARCH.tar.gz`, containing `bbb`,
-and `checksums.txt`. Supported targets are Linux/macOS, amd64/arm64.
-`python3 scripts/package_release.py v0.1.1` builds these archives locally.
-The tag is also the Go module release. No separate Go upload is needed.
-Python publication is not configured.
+1. GitHub `BrokkAi/bug-bot`: four `brokk-bug-bot-VERSION-OS-ARCH.tar.gz`
+   archives for Linux/macOS amd64/arm64, plus `checksums.txt` and `release.json`.
+   Each archive includes the executable, exact commit/version/platform metadata,
+   README, license, notice and dependency report.
+2. Go module `github.com/BrokkAi/bug-bot`: the same immutable version tag exposes
+   the source module. There is no separate upload or registry credential.
+3. npm `@brokkai/bug-bot-linux-x64`, `@brokkai/bug-bot-linux-arm64`,
+   `@brokkai/bug-bot-darwin-x64`, `@brokkai/bug-bot-darwin-arm64`: independent
+   native packages, submitted before the launcher.
+4. npm `@brokkai/bug-bot`: launcher with exact-version optional dependencies on
+   all four platform packages.
 
-The package job validates native checksums, package contents, local installs and
-existing-version integrity before uploading. Platform packages are submitted
-before the launcher. Upload errors fail the job; successful npm uploads do not
-wait for public version indexes or run immediate public-install smoke tests.
+No Python, Maven, crates.io, container, documentation deployment, update feed,
+external signing or notarization publication is configured. The shell installer
+consumes GitHub assets; it has no separate update feed.
 
-For a partial npm failure, rerun failed jobs or dispatch `publish-packages.yml`
-from the exact existing tag with its tag input and `publish=true`. Use
-`publish=false` for validation without uploads. Matching existing package bytes
-are retained; conflicting versions stop publication. The explicit
-`python3 scripts/package_registry.py verify dist/packages` command remains
-available for later public-integrity checks after registry propagation.
+## Non-publishing preflight
 
-If publication fails after draft creation, inspect the draft and uploaded assets.
-Complete or replace that draft explicitly; do not move published version tags.
+`ci.yml` (CI) validates pushes, PRs, manual runs and reusable calls on Linux and
+macOS. `release.yml` (Release) is reusable build-only infrastructure, invoked by
+`publish-packages.yml` (Publish packages). Branch pushes never publish.
 
-## License validation
+Run `make check build`, Python script tests and Node launcher tests for changed
+inputs. CI also builds all real platform archives, npm packages, and performs
+local installer smoke tests. License validation runs before native packaging.
+See `licenses/README.md` when changing dependencies or Go versions.
 
-Before committing release preparation, run `python3 scripts/licenses.py`.
-For dependency or Go version changes, follow [licenses/README.md](licenses/README.md)
-to review the policy and regenerate notices. Native packaging repeats this
-check and includes the exact project license, notice, and dependency report.
-Every npm package retains these files from the verified native assets. The
-package smoke test inspects their bytes as well as exercising installation.
+Dispatch the existing workflow at the exact preparation branch or merged SHA,
+with a proposed version and **publish=false** (the default):
+
+```sh
+gh workflow run publish-packages.yml --repo github.com/BrokkAi/bug-bot --ref PREPARED_REF -f tag=v0.2.2 -F publish=false
+```
+
+This runs complete CI, builds native archives and all npm packages, saves Actions
+artifacts, checks every version, and probes the actual publisher without final
+asset uploads, tags or public releases. A disposable empty private GitHub draft
+is created, updated and deleted solely to test the job's release-write access.
+The draft is not readiness state and is never needed by later verification.
+
+The `packages` job uses environment `packages-publish`, `contents:write`,
+`actions:read`, and `id-token:write`. Its GITHUB_TOKEN validates GitHub access.
+For every npm package, it exchanges its exact-commit GitHub OIDC token with npm,
+checks expiry, and requires inspectable matching trusted publisher configuration
+with `createPackage` permission. The trust must identify `BrokkAi/bug-bot`,
+`publish-packages.yml`, and `packages-publish`. A staging-only grant is not enough.
+No developer login or stored token is substituted. Registry trust reads may
+require an npm owner session and 2FA unavailable to the workflow; that is a real
+blocked authorization gate, not a reason to attempt an upload. An npm owner must
+provide a supported non-publishing way to inspect the direct-publish grant if npm
+rejects the exchanged identity for that read. Do not bypass this check.
+
+Inspect the exact-SHA latest run and jobs using `gh`. Once the preflight run is
+successful, independent daemon checks use these commands with `RELEASE_COMMIT`,
+`RELEASE_TAG`, and optional `RELEASE_TARGET` set:
+
+```sh
+python3 scripts/release_preflight.py build
+python3 scripts/release_preflight.py authorization
+python3 scripts/release_preflight.py version
+```
+
+The build command requires successful exact-commit jobs and unexpired native/npm
+artifact evidence. Authorization also requires evidence less than one hour old;
+redispatch preflight when it expires. Version checks always query GitHub and npm.
+The same commands cover every destination; npm checks validate all five packages
+and their dependency ordering together. There is no unconditional-success check.
+
+## Publication and recovery (separate phase)
+
+After preflight is approved by the release daemon, create/push the exact version
+tag, which triggers `publish-packages.yml`. A tag made using GITHUB_TOKEN does
+not automatically trigger another workflow: use an explicit dispatch from the
+existing exact tag with `publish=true` in that case. Never dispatch publication
+from a branch. Workflow dispatch with `publish=false` needs no existing tag.
+
+The publishing job rebuilds and validates everything, rechecks every version and
+its own credentials before uploads, recreates a missing draft, uploads missing
+native assets without overwriting conflicts, submits platform npm packages before
+the launcher, verifies all npm versions, then makes the GitHub release public.
+Registry visibility delays fail safely with the draft private; rerun once npm
+indexes are available. Existing identical npm payloads are retained. A public
+GitHub release enters read-only verification; it is never converted to a draft.
+
+For partial staging recovery, rerun the same exact tag. Existing draft assets
+must match the original staged bytes. Preserve conflicting drafts and investigate
+instead of overwriting. During upload, native downloads must match staged bytes.
+Independent later verification validates downloaded archives against their own
+checksums/manifests and compares unpacked file bytes and permissions against the
+exact-commit build, so compressor differences do not hide binary differences.
+
+After publication run the separate destination verifier:
+
+```sh
+python3 scripts/release_preflight.py published
+```
+
+Set `RELEASE_DESTINATION` to the individual npm package name, to
+`github.com/BrokkAi/bug-bot` for the Go module, or `github-release` for assets.
+It rejects missing/partial publication and wrong metadata, contents or modes.
+Go verification resolves the immutable module version and checks its origin SHA.
