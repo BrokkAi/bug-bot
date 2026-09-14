@@ -308,8 +308,9 @@ func TestIncompleteHistoryAndUncertainReviewFailClosed(t *testing.T) {
 		})
 	}
 }
-func TestScanDoesNotPublishAgainstAdvancedBranch(t *testing.T) {
+func TestScanPublishesPinnedCommitWhenBranchAdvances(t *testing.T) {
 	e, s, f, a, source := fixture(t)
+	scanned := localGit(t, source, "rev-parse", "HEAD")
 	a.onScan = func() {
 		localGit(t, source, "switch", "main")
 		writeTestFile(t, filepath.Join(source, "next.txt"), "new commit")
@@ -317,11 +318,17 @@ func TestScanDoesNotPublishAgainstAdvancedBranch(t *testing.T) {
 		localGit(t, source, "commit", "-m", "advance")
 		localGit(t, source, "push", "origin", "main")
 	}
-	if err := e.step(context.Background(), s, true); err == nil || !strings.Contains(err.Error(), "advanced") {
-		t.Fatalf("expected stale branch error: %v", err)
+	if err := e.step(context.Background(), s, true); err != nil {
+		t.Fatal(err)
 	}
-	if f.creates != 0 {
-		t.Fatal("published stale finding")
+	if f.creates != 1 || len(f.items) != 1 {
+		t.Fatalf("finding was not published: creates %d, issues %d", f.creates, len(f.items))
+	}
+	if advanced := localGit(t, source, "rev-parse", "HEAD"); advanced == scanned {
+		t.Fatal("fixture branch did not advance")
+	}
+	if !strings.Contains(f.items[0].Body, scanned) {
+		t.Fatal("published finding does not identify the immutable scanned commit")
 	}
 }
 func TestChangedSourceAndMissingSourceRefused(t *testing.T) {

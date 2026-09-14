@@ -127,8 +127,10 @@ existing output and never open the dashboard.
    numbers it reviewed. A duplicate verdict links the existing report in local
    state. Uncertain and invalid findings are saved without filing.
 5. Refresh issues before publication. New or edited reports go back to the LLM
-   for comparison. Recheck the source commit and tracked files. An optional
-   operator verifier can provide an additional gate.
+   for comparison. Recheck the detached scan worktree and tracked files. The
+   remote branch may advance normally while the pinned commit is reviewed; each
+   report identifies that exact commit. An optional operator verifier can provide
+   an additional gate.
 6. Create issues sequentially, including reproduction, evidence, and the review
    explanation. Each newly created issue is available to the next candidate's
    LLM review, including candidates from the same scan.

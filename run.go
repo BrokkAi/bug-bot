@@ -263,7 +263,7 @@ func (e engine) attempt(ctx context.Context, s *State, g, w checkout) error {
 		if c.Status != "pending" {
 			continue
 		}
-		if err := e.reviewAndPublish(ctx, s, g, w, a, c); err != nil {
+		if err := e.reviewAndPublish(ctx, s, w, a, c); err != nil {
 			return err
 		}
 	}
@@ -312,7 +312,7 @@ func reviewChunks(issues []Issue) [][]Issue {
 }
 func issueDigest(i Issue) [32]byte { b, _ := json.Marshal(i); return sha256.Sum256(b) }
 
-func (e engine) reviewAndPublish(ctx context.Context, s *State, g, w checkout, a Agent, c *Candidate) error {
+func (e engine) reviewAndPublish(ctx context.Context, s *State, w checkout, a Agent, c *Candidate) error {
 	e.report(s, "reviewing", "Refreshing issue history: "+c.Finding.Title)
 	checked := map[int][32]byte{}
 	validated := false
@@ -366,16 +366,9 @@ func (e engine) reviewAndPublish(ctx context.Context, s *State, g, w checkout, a
 			continue
 		}
 		e.report(s, "verifying", "Verifying source and evidence: "+c.Finding.Title)
-		if err := g.open(ctx); err != nil {
-			return err
-		}
-		head, err := g.head(ctx)
-		if err != nil {
-			return err
-		}
-		if head != s.Scan.Commit {
-			return errors.New("remote branch advanced during scan; next attempt will scan the new commit")
-		}
+		// The scan worktree is an immutable snapshot. Normal development may advance
+		// the tracked branch while review is in progress; that does not invalidate
+		// evidence collected from, and published with links to, s.Scan.Commit.
 		if err := w.verify(ctx, s.Scan); err != nil {
 			return err
 		}
