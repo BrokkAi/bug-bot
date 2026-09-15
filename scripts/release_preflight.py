@@ -205,8 +205,10 @@ def publish(tag, sha):
         return
     release_authorization.github()
     release_authorization.npm()
+    prerelease = '-' in tag
     if not record:
-        gh('release', 'create', tag, '--repo', f'github.com/{REPO}', '--verify-tag', '--draft', '--title', f'Brokk Bug Bot {tag}', '--generate-notes')
+        gh('release', 'create', tag, '--repo', f'github.com/{REPO}', '--verify-tag', '--draft', '--title', f'Brokk Bug Bot {tag}', '--generate-notes',
+           *(['--prerelease'] if prerelease else []))
         record = release_record(tag)
     present = {a['name'] for a in record['assets']}
     for path in sorted(NATIVE.iterdir()):
@@ -215,7 +217,9 @@ def publish(tag, sha):
     github_version(tag, sha, strict=True)
     package_registry.run('publish', PACKAGES)
     package_registry.run('verify', PACKAGES)
-    gh('release', 'edit', tag, '--repo', f'github.com/{REPO}', '--draft=false', '--latest')
+    # Set both flags on finalization too, including drafts staged by older code.
+    gh('release', 'edit', tag, '--repo', f'github.com/{REPO}', '--draft=false',
+       f'--prerelease={str(prerelease).lower()}', '--latest=false' if prerelease else '--latest')
     github_version(tag, sha, required=True, strict=True)
 
 

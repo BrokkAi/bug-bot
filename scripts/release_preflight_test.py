@@ -22,6 +22,33 @@ def archive(payload=b'binary', mode=0o755, mtime=0):
 
 
 class ReleasePreflight(unittest.TestCase):
+    def test_publication_sets_release_channel_for_new_and_resumed_drafts(self):
+        for tag in ('v0.4.0-rc.1', 'v0.4.0-beta', 'v0.4.0'):
+            for resumed in (False, True):
+                with self.subTest(tag=tag, resumed=resumed), tempfile.TemporaryDirectory() as temporary:
+                    prerelease = '-' in tag
+                    draft = {'draft': True, 'prerelease': False, 'assets': []}
+                    preflight.release.validate_tag(tag)
+                    with patch.dict(os.environ, GITHUB_REF=f'refs/tags/{tag}'), \
+                            patch.object(preflight, 'NATIVE', Path(temporary)), \
+                            patch.object(preflight, 'version'), patch.object(preflight, 'tag_version'), \
+                            patch.object(preflight, 'github_version', return_value=draft if resumed else None), \
+                            patch.object(preflight, 'release_record', return_value=draft), \
+                            patch.object(authorization, 'github'), patch.object(authorization, 'npm'), \
+                            patch.object(preflight.package_registry, 'run') as registry, \
+                            patch.object(preflight, 'gh') as gh:
+                        preflight.publish(tag, 'a'*40)
+                    commands = [call.args for call in gh.call_args_list]
+                    creates = [args for args in commands if args[:2] == ('release', 'create')]
+                    self.assertEqual(len(creates), 0 if resumed else 1)
+                    if creates:
+                        self.assertEqual('--prerelease' in creates[0], prerelease)
+                    edits = [args for args in commands if args[:2] == ('release', 'edit')]
+                    self.assertEqual(edits, [('release', 'edit', tag, '--repo', f'github.com/{preflight.REPO}',
+                                             '--draft=false', f'--prerelease={str(prerelease).lower()}',
+                                             '--latest=false' if prerelease else '--latest')])
+                    self.assertEqual([call.args[0] for call in registry.call_args_list], ['publish', 'verify'])
+
     def test_private_draft_is_found_when_release_by_tag_returns_404(self):
         draft = {'tag_name': 'v0.3.4', 'draft': True, 'assets': []}
         def fake_api(path, missing=False):

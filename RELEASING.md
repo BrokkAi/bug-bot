@@ -90,6 +90,11 @@ Registry visibility delays fail safely with the draft private; rerun once npm
 indexes are available. Existing identical npm payloads are retained. A public
 GitHub release enters read-only verification; it is never converted to a draft.
 
+Tags with a prerelease suffix (such as `v0.4.0-rc.1`) publish as GitHub
+prereleases without replacing the latest stable release used by the unpinned
+shell installer. npm publishes these versions under `next`. Stable tags promote
+the GitHub release to latest and use npm's `latest` tag.
+
 For partial staging recovery, rerun the same exact tag. Existing draft assets
 must match the original staged bytes. Preserve conflicting drafts and investigate
 instead of overwriting. During upload, native downloads must match staged bytes.
