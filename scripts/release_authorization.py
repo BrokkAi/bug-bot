@@ -15,6 +15,14 @@ import package_release as release
 REPO = 'BrokkAi/bug-bot'
 
 
+def exchange_expiry(value):
+    if isinstance(value, int) and not isinstance(value, bool):
+        return datetime.fromtimestamp(value, timezone.utc)
+    if isinstance(value, str):
+        return datetime.fromisoformat(value.replace('Z', '+00:00'))
+    raise ValueError('npm exchange returned an unsupported expiry')
+
+
 def check_subject(claims, repository):
     owner_id, repo_id = str(repository['owner']['id']), str(repository['id'])
     subjects = {
@@ -78,7 +86,7 @@ def npm():
         try:
             escaped = urllib.parse.quote(name, safe='')
             exchanged = request(f'https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/{escaped}', token, 'POST')
-            expiry = datetime.fromisoformat(exchanged['expires'].replace('Z', '+00:00'))
+            expiry = exchange_expiry(exchanged['expires'])
             if exchanged.get('token_type') != 'oidc' or not exchanged.get('token') or (expiry - datetime.now(timezone.utc)).total_seconds() < 60:
                 raise ValueError('OIDC exchange returned invalid or expiring credentials')
             print(f'{name}: exact workflow/environment OIDC exchange accepted; credential expiry validated')
