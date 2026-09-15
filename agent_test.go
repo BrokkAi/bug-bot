@@ -22,6 +22,10 @@ func TestACPAgentHelper(t *testing.T) {
 	if scenario == "" {
 		return
 	}
+	if scenario == "terminal-command" {
+		time.Sleep(30 * time.Second)
+		os.Exit(0)
+	}
 	decoder, encoder := json.NewDecoder(os.Stdin), json.NewEncoder(os.Stdout)
 	read := func() map[string]any {
 		var message map[string]any
@@ -61,6 +65,10 @@ func TestACPAgentHelper(t *testing.T) {
 		{"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": "small", "options": []map[string]string{{"value": "small", "name": "Small"}, {"value": "large", "name": "Large"}}},
 		{"id": "reasoning_effort", "name": "Effort", "category": "thought_level", "type": "select", "currentValue": "low", "options": []map[string]string{{"value": "low", "name": "Low"}, {"value": "high", "name": "High"}}},
 	}
+	if scenario == "uncategorized-effort" {
+		options[1]["id"] = "thought_level"
+		delete(options[1], "category")
+	}
 	reply(session, map[string]any{"sessionId": "test-session", "configOptions": options, "modes": map[string]any{"currentModeId": "plan", "availableModes": []map[string]string{{"id": "plan", "name": "Plan"}, {"id": "code", "name": "Code"}}}})
 	mode := request("session/set_mode")
 	if mode["params"].(map[string]any)["modeId"] != "code" {
@@ -96,6 +104,25 @@ func TestACPAgentHelper(t *testing.T) {
 			read()
 		}
 	}
+	if scenario == "disconnect-terminal" {
+		executable, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		send(map[string]any{"id": "create", "method": "terminal/create", "params": map[string]any{
+			"sessionId": "test-session", "command": executable, "args": []string{"-test.run=^TestACPAgentHelper$"},
+			"env": []map[string]string{{"name": "BUG_BOT_TEST_ACP", "value": "terminal-command"}},
+		}})
+		created := read()
+		if created["error"] != nil || created["result"] == nil {
+			t.Fatalf("terminal creation = %v", created)
+		}
+		id := created["result"].(map[string]any)["terminalId"]
+		send(map[string]any{"id": "wait", "method": "terminal/wait_for_exit", "params": map[string]any{"sessionId": "test-session", "terminalId": id}})
+		// Close the transport with an unanswered prompt and a terminal handler
+		// waiting on a command that outlives the parent's test deadline.
+		os.Exit(0)
+	}
 	send(map[string]any{"id": "permission", "method": "session/request_permission", "params": map[string]any{"sessionId": "test-session", "toolCall": map[string]any{"toolCallId": "tool", "title": "Inspect source"}, "options": []map[string]string{{"optionId": "deny", "name": "Deny", "kind": "reject_once"}, {"optionId": "allow", "name": "Allow", "kind": "allow_once"}}}})
 	permission := read()
 	outcome := permission["result"].(map[string]any)["outcome"].(map[string]any)
@@ -123,7 +150,7 @@ func testACPProcess(t *testing.T, scenario string) agentProcess {
 }
 
 func TestAgentProcessACP(t *testing.T) {
-	for _, scenario := range []string{"success", "reject", "cancel"} {
+	for _, scenario := range []string{"success", "reject", "cancel", "uncategorized-effort", "disconnect-terminal"} {
 		t.Run(scenario, func(t *testing.T) {
 			process := testACPProcess(t, scenario)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -160,7 +187,7 @@ func TestAgentProcessACP(t *testing.T) {
 			}
 			var setup *runner.SetupError
 			switch scenario {
-			case "success":
+			case "success", "uncategorized-effort":
 				if got.err != nil || got.text != "no findings" {
 					t.Fatalf("Execute = %q, %v", got.text, got.err)
 				}
@@ -171,6 +198,10 @@ func TestAgentProcessACP(t *testing.T) {
 			case "cancel":
 				if !errors.Is(got.err, context.Canceled) || errors.As(got.err, &setup) {
 					t.Fatalf("cancel error = %v", got.err)
+				}
+			case "disconnect-terminal":
+				if !errors.Is(got.err, io.EOF) || ctx.Err() != nil || got.text != "" {
+					t.Fatalf("disconnect result = %+v, context error = %v", got, ctx.Err())
 				}
 			}
 			files, err := filepath.Glob(filepath.Join(process.config.StateDirectory, "sessions", "*.jsonl"))
