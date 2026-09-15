@@ -50,6 +50,7 @@ make build
 ./bin/bbb /path/to/your-repo --max-issues 2 --label bug
 ./bin/bbb /path/to/your-repo --model YOUR_MODEL_ID --effort low
 ./bin/bbb status /path/to/your-repo
+./bin/bbb report /path/to/your-repo --status dry_run > findings.md
 ./bin/bbb version
 ./bin/bbb retry /path/to/your-repo --once
 ```
@@ -108,7 +109,7 @@ details on exit.
 
 Piped input, redirected stderr, and `TERM=dumb` use scrolling output automatically.
 `--plain` and `--json` disable the dashboard and are mutually exclusive.
-`NO_COLOR` disables dashboard colors. `status`, `version`, and help keep their
+`NO_COLOR` disables dashboard colors. `status`, `report`, `version`, and help keep their
 existing output and never open the dashboard.
 
 ## How it works
@@ -242,6 +243,25 @@ State defaults to `$XDG_STATE_HOME/bug-bot` or `~/.local/state/bug-bot`, keyed b
 remote and branch. JSON state is replaced atomically with fsync; private session
 transcripts live under the state directory. `status` prints saved JSON without
 starting an agent. `--json` selects structured progress logs.
+
+Export all retained findings as Markdown for later review or sharing:
+
+```sh
+bbb report --config bug-bot.json > findings.md
+bbb report --config bug-bot.json --status dry_run > dry-run.md
+```
+
+`report` reads saved state without starting an agent or scan, or changing state.
+A repository argument and `--branch` use the same selection as other commands;
+`--config` avoids remote discovery and requires neither GitHub CLI nor an agent.
+The report includes every completed and active finding (without the dashboard's
+200-entry limit), evidence, review, saved status, and any issue URL. Filter with
+`--status pending|posting|submitted|duplicate|uncertain|invalid|dry_run|stale`
+(select one value); omitting it includes all outcomes. Empty selections report
+no saved findings. Active findings show the scan's known commit; completed
+findings explicitly show commit unavailable because it is not retained. Internal
+checkout/state paths and publication request markers are omitted from report
+metadata; saved finding text is preserved.
 
 Scan worktrees and reproduction files are retained for inspection. Manage their
 retention along with transcripts externally. Agent instructions prohibit fixes,

@@ -71,14 +71,21 @@ func ReadState(cfg Config) (*State, error) {
 		if c == nil || c.Finding.validate() != nil || (len(c.RequestID) != 32 || strings.Trim(c.RequestID, "0123456789abcdef") != "") {
 			return nil, errors.New("invalid saved finding")
 		}
-		switch c.Status {
-		case "pending", "posting", "submitted", "duplicate", "uncertain", "invalid", "dry_run", "stale":
-		default:
+		if !validFindingStatus(c.Status) {
 			return nil, errors.New("invalid saved finding status")
 		}
 	}
 	return &s, nil
 }
+func validFindingStatus(status string) bool {
+	switch status {
+	case "pending", "posting", "submitted", "duplicate", "uncertain", "invalid", "dry_run", "stale":
+		return true
+	default:
+		return false
+	}
+}
+
 func validCommit(s string) bool {
 	if len(s) != 40 && len(s) != 64 {
 		return false
