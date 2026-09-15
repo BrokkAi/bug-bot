@@ -249,6 +249,8 @@ func (e engine) step(ctx context.Context, s *State, force bool) error {
 		s.Scan.Tries--
 	}
 	s.Scan.Failure = err.Error()
+	// Wait the full retry delay after failure, even when the attempt ran longer.
+	s.Scan.RetryAt = e.now().Add(time.Duration(e.config.RetryDelay))
 	return errors.Join(err, e.save(s))
 }
 func containsMarker(i Issue, key string) bool {
