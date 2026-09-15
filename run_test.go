@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -81,12 +82,18 @@ type fakeAgent struct {
 	findings       []Finding
 	onReview       func([]Issue) Review
 	onScan         func()
+	onExecute      func() error
 	err            error
 }
 
 func (a *fakeAgent) Execute(_ context.Context, prompt string) (string, error) {
 	if a.err != nil {
 		return "", a.err
+	}
+	if a.onExecute != nil {
+		if err := a.onExecute(); err != nil {
+			return "", err
+		}
 	}
 	if strings.Contains(prompt, "Scan context (data):") {
 		a.scans++
@@ -137,9 +144,79 @@ func fixture(t *testing.T) (engine, *State, *fakeSource, *fakeAgent, string) {
 	}
 	f := &fakeSource{cfg: cfg}
 	a := &fakeAgent{}
-	e := engine{config: cfg, source: f, log: slog.New(slog.NewTextHandler(io.Discard, nil)), agent: func(Config) Agent { return a }, now: time.Now}
+	e := engine{config: cfg, source: f, log: slog.New(slog.NewTextHandler(io.Discard, nil)), agent: func(Config) Agent { return a }, now: time.Now, sleep: func(context.Context, time.Duration) error { return nil }}
 	return e, newState(cfg), f, a, source
 }
+
+func TestRunSymlinkDirectory(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existing=%t", existing), func(t *testing.T) {
+			e, _, _, _, _ := fixture(t)
+			t.Setenv("XDG_STATE_HOME", canonicalTestDir(t))
+			if existing {
+				if err := (checkout{e.config}).open(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			alias := filepath.Join(canonicalTestDir(t), "alias")
+			if err := os.Symlink(filepath.Dir(e.config.Directory), alias); err != nil {
+				t.Fatal(err)
+			}
+			cfg := e.config
+			cfg.Directory = filepath.Join(alias, "checkout")
+			cfg.StateDirectory = filepath.Join(alias, "state")
+			if err := cfg.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			reached := false
+			ctx = WithProgress(ctx, func(p Progress) {
+				if p.Phase == "attempt" {
+					reached = true
+					cancel() // Stop before accessing GitHub or starting an agent.
+				}
+			})
+			err := Run(ctx, cfg, e.log, true)
+			if !reached || !errors.Is(err, context.Canceled) {
+				t.Fatalf("expected cancellation after workspace preparation, reached=%t: %v", reached, err)
+			}
+			saved, err := ReadState(e.config)
+			if err != nil || saved == nil || saved.Scan == nil {
+				t.Fatalf("missing saved scan: %+v, %v", saved, err)
+			}
+			if filepath.Dir(saved.Scan.Directory) != e.config.Directory+"-scans" {
+				t.Fatalf("scan path is not canonical: %s", saved.Scan.Directory)
+			}
+			w := checkout{e.config}
+			w.config.Directory = saved.Scan.Directory
+			if err := w.verify(context.Background(), saved.Scan); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestRunSymlinkOverlapRejected(t *testing.T) {
+	e, _, _, _, _ := fixture(t)
+	alias := filepath.Join(canonicalTestDir(t), "alias")
+	if err := os.Symlink(filepath.Dir(e.config.Directory), alias); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"checkout", "checkout-scans"} {
+		t.Run(name, func(t *testing.T) {
+			cfg := e.config
+			cfg.StateDirectory = filepath.Join(alias, name, "state")
+			if err := cfg.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			if err := Run(context.Background(), cfg, e.log, true); err == nil || !strings.Contains(err.Error(), "must not overlap") {
+				t.Fatalf("expected resolved path overlap rejection, got %v", err)
+			}
+		})
+	}
+}
+
 func TestScanPublishAndRestartDoesNotDuplicate(t *testing.T) {
 	e, s, f, a, source := fixture(t)
 	writeTestFile(t, filepath.Join(source, "unfinished.txt"), "user work")
@@ -308,8 +385,9 @@ func TestIncompleteHistoryAndUncertainReviewFailClosed(t *testing.T) {
 		})
 	}
 }
-func TestScanDoesNotPublishAgainstAdvancedBranch(t *testing.T) {
+func TestScanPublishesPinnedCommitWhenBranchAdvances(t *testing.T) {
 	e, s, f, a, source := fixture(t)
+	scanned := localGit(t, source, "rev-parse", "HEAD")
 	a.onScan = func() {
 		localGit(t, source, "switch", "main")
 		writeTestFile(t, filepath.Join(source, "next.txt"), "new commit")
@@ -317,11 +395,17 @@ func TestScanDoesNotPublishAgainstAdvancedBranch(t *testing.T) {
 		localGit(t, source, "commit", "-m", "advance")
 		localGit(t, source, "push", "origin", "main")
 	}
-	if err := e.step(context.Background(), s, true); err == nil || !strings.Contains(err.Error(), "advanced") {
-		t.Fatalf("expected stale branch error: %v", err)
+	if err := e.step(context.Background(), s, true); err != nil {
+		t.Fatal(err)
 	}
-	if f.creates != 0 {
-		t.Fatal("published stale finding")
+	if f.creates != 1 || len(f.items) != 1 {
+		t.Fatalf("finding was not published: creates %d, issues %d", f.creates, len(f.items))
+	}
+	if advanced := localGit(t, source, "rev-parse", "HEAD"); advanced == scanned {
+		t.Fatal("fixture branch did not advance")
+	}
+	if !strings.Contains(f.items[0].Body, scanned) {
+		t.Fatal("published finding does not identify the immutable scanned commit")
 	}
 }
 func TestChangedSourceAndMissingSourceRefused(t *testing.T) {
@@ -350,11 +434,64 @@ func TestChangedSourceAndMissingSourceRefused(t *testing.T) {
 func TestSetupFailureDoesNotConsumeAttempt(t *testing.T) {
 	e, s, _, a, _ := fixture(t)
 	a.err = &runner.SetupError{Err: errors.New("missing model")}
+	var slept []time.Duration
+	e.sleep = func(_ context.Context, d time.Duration) error { slept = append(slept, d); return nil }
 	if err := e.step(context.Background(), s, true); err == nil {
 		t.Fatal("setup error hidden")
 	}
 	if s.Scan.Tries != 0 {
 		t.Fatal("setup failure consumed attempt")
+	}
+	if len(slept) != len(startupRetryDelays) {
+		t.Fatalf("startup failure retried %d times, want %d", len(slept), len(startupRetryDelays))
+	}
+}
+func TestTransientStartupFailureRecovers(t *testing.T) {
+	e, s, f, a, _ := fixture(t)
+	failures := 2
+	a.onExecute = func() error {
+		if failures > 0 {
+			failures--
+			return &runner.SetupError{Err: errors.New("Codex process has exited with code 1: failed to initialize sqlite state runtime")}
+		}
+		return nil
+	}
+	var slept []time.Duration
+	e.sleep = func(_ context.Context, d time.Duration) error { slept = append(slept, d); return nil }
+	if err := e.step(context.Background(), s, true); err != nil {
+		t.Fatal(err)
+	}
+	if f.creates != 1 || len(slept) != 2 || slept[0] != startupRetryDelays[0] || slept[1] != startupRetryDelays[1] {
+		t.Fatalf("creates %d, slept %v", f.creates, slept)
+	}
+}
+func TestStartupRetrySkipsPermanentAndPromptFailures(t *testing.T) {
+	for _, err := range []error{
+		&runner.SetupError{Err: fmt.Errorf("launch ACP agent: %w", &exec.Error{Name: "codex-acp", Err: exec.ErrNotFound})},
+		errors.New("prompt failed after start"),
+	} {
+		e, s, _, a, _ := fixture(t)
+		a.err = err
+		slept := 0
+		e.sleep = func(context.Context, time.Duration) error { slept++; return nil }
+		if e.step(context.Background(), s, true) == nil {
+			t.Fatal("error hidden")
+		}
+		if slept != 0 {
+			t.Fatalf("retried %v", err)
+		}
+	}
+}
+func TestStartupRetryStopsWhenCancelled(t *testing.T) {
+	e, s, _, a, _ := fixture(t)
+	a.err = &runner.SetupError{Err: errors.New("exited")}
+	ctx, cancel := context.WithCancel(context.Background())
+	e.sleep = func(ctx context.Context, _ time.Duration) error { cancel(); return ctx.Err() }
+	if err := e.step(ctx, s, true); !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v", err)
+	}
+	if s.Scan.Tries != 0 {
+		t.Fatalf("cancelled startup retry consumed attempt: %+v", s.Scan)
 	}
 }
 func TestBatchDuplicatesAndZeroFindings(t *testing.T) {

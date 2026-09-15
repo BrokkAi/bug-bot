@@ -82,6 +82,11 @@ func ReadConfig(filename string) (Config, error) {
 	if err != nil {
 		return cfg, err
 	}
+	// Git records relative clone sources as absolute origin paths. Resolve them
+	// from the config file before cloning, while preserving URL and SCP syntax.
+	if cfg.Remote != "" && !strings.HasPrefix(cfg.Remote, "-") && !isRemoteURL(cfg.Remote) && !filepath.IsAbs(cfg.Remote) {
+		cfg.Remote = filepath.Join(base, cfg.Remote)
+	}
 	for _, path := range []*string{&cfg.Directory, &cfg.StateDirectory} {
 		if !filepath.IsAbs(*path) {
 			*path = filepath.Join(base, *path)

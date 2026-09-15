@@ -50,6 +50,7 @@ make build
 ./bin/bbb /path/to/your-repo --max-issues 2 --label bug
 ./bin/bbb /path/to/your-repo --model YOUR_MODEL_ID --effort low
 ./bin/bbb status /path/to/your-repo
+./bin/bbb report /path/to/your-repo --status dry_run > findings.md
 ./bin/bbb version
 ./bin/bbb retry /path/to/your-repo --once
 ```
@@ -108,7 +109,7 @@ details on exit.
 
 Piped input, redirected stderr, and `TERM=dumb` use scrolling output automatically.
 `--plain` and `--json` disable the dashboard and are mutually exclusive.
-`NO_COLOR` disables dashboard colors. `status`, `version`, and help keep their
+`NO_COLOR` disables dashboard colors. `status`, `report`, `version`, and help keep their
 existing output and never open the dashboard.
 
 ## How it works
@@ -127,8 +128,10 @@ existing output and never open the dashboard.
    numbers it reviewed. A duplicate verdict links the existing report in local
    state. Uncertain and invalid findings are saved without filing.
 5. Refresh issues before publication. New or edited reports go back to the LLM
-   for comparison. Recheck the source commit and tracked files. An optional
-   operator verifier can provide an additional gate.
+   for comparison. Recheck the detached scan worktree and tracked files. The
+   remote branch may advance normally while the pinned commit is reviewed; each
+   report identifies that exact commit. An optional operator verifier can provide
+   an additional gate.
 6. Create issues sequentially, including reproduction, evidence, and the review
    explanation. Each newly created issue is available to the next candidate's
    LLM review, including candidates from the same scan.
@@ -142,9 +145,15 @@ and another scan **30 minutes after completion**, even if the commit is unchange
 Recent summaries guide exploration; this is not a claim of exhaustive coverage.
 `once` runs or resumes one scan and exits. Failed scans retain their candidates,
 workspace, and diagnostics; retries wait at least 15 minutes and run on the next
-poll, with three attempts before requiring `retry`. Agent setup errors stop the
-daemon without consuming an attempt. An advanced branch invalidates pending
-findings so the next eligible attempt scans the new commit.
+poll, with three attempts before requiring `retry`. Agent startup failures are
+retried in place three times within about a minute, since nothing has been
+prompted yet; persistent setup errors then stop the daemon without consuming
+an attempt. After reconciling any uncertain issue
+publications, each poll or one-shot invocation checks for an advanced branch
+before enforcing the saved revision’s attempt budget or retry delay. A new
+revision archives pending findings as stale, retains their evidence and workspace,
+and starts a separate scan with a fresh budget. An unchanged exhausted revision
+remains blocked until `retry`.
 
 ## Duplicate handling and interrupted requests
 
@@ -174,10 +183,34 @@ paths using the same state home. Different machines/accounts and simultaneous
 human reports cannot be locked atomically with GitHub issue creation. Run one
 active `bbb` per repository to avoid that race.
 
+## Brokk Town worker service
+
+`bbb worker --socket PATH` serves one-shot bug scan operations to Brokk
+Town over a private Unix-domain socket. The socket is mode `0600`; the endpoint is
+private to the local service, and the process exits after Town requests shutdown.
+
+Worker protocol v1 uses standard-library HTTP with JSON messages:
+
+- `GET /v1/initialize` returns the protocol range, bot identity, release version,
+  and capabilities. Town requires `bug-scan` as well as common `run` and
+  `progress` capabilities.
+- `POST /v1/runs` accepts one strict JSON task and responds with contiguous
+  newline-delimited JSON events: `progress`, optional typed `result`,
+  and `error`, `canceled`, or `complete`.
+- `POST /v1/shutdown` asks the service to stop after the current stream.
+
+Version and capability negotiation happen before work starts. Town does not read
+this bot's private state files; issue and review outcomes are explicit protocol
+results when applicable, while GitHub remains the durable source for receipts.
+The schemas are independent of the Unix HTTP transport, allowing an authenticated
+TLS transport to be added later without changing worker semantics.
+
 ## Optional configuration
 
 `bbb --config bug-bot.json` loads a strict JSON object. No file is loaded or
-generated implicitly. Paths are resolved relative to the configuration file.
+generated implicitly. Paths, including local mirror remotes such as
+`./mirror.git` or `./published:mirror.git`, are resolved relative to the
+configuration file.
 See [bug-bot.example.json](bug-bot.example.json).
 
 ```json
@@ -214,6 +247,25 @@ State defaults to `$XDG_STATE_HOME/bug-bot` or `~/.local/state/bug-bot`, keyed b
 remote and branch. JSON state is replaced atomically with fsync; private session
 transcripts live under the state directory. `status` prints saved JSON without
 starting an agent. `--json` selects structured progress logs.
+
+Export all retained findings as Markdown for later review or sharing:
+
+```sh
+bbb report --config bug-bot.json > findings.md
+bbb report --config bug-bot.json --status dry_run > dry-run.md
+```
+
+`report` reads saved state without starting an agent or scan, or changing state.
+A repository argument and `--branch` use the same selection as other commands;
+`--config` avoids remote discovery and requires neither GitHub CLI nor an agent.
+The report includes every completed and active finding (without the dashboard's
+200-entry limit), evidence, review, saved status, and any issue URL. Filter with
+`--status pending|posting|submitted|duplicate|uncertain|invalid|dry_run|stale`
+(select one value); omitting it includes all outcomes. Empty selections report
+no saved findings. Active findings show the scan's known commit; completed
+findings explicitly show commit unavailable because it is not retained. Internal
+checkout/state paths and publication request markers are omitted from report
+metadata; saved finding text is preserved.
 
 Scan worktrees and reproduction files are retained for inspection. Manage their
 retention along with transcripts externally. Agent instructions prohibit fixes,

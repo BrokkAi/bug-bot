@@ -74,10 +74,6 @@ func Discover(ctx context.Context, target, branch string) (Config, error) {
 			if !isRemoteURL(cfg.Remote) && !filepath.IsAbs(cfg.Remote) {
 				cfg.Remote = filepath.Join(root, cfg.Remote)
 			}
-			if branch == "" {
-				ref, _ := git("symbolic-ref", "--quiet", "refs/remotes/"+remoteName+"/HEAD")
-				branch = strings.TrimPrefix(ref, "refs/remotes/"+remoteName+"/")
-			}
 		}
 	} else {
 		if !isRemoteURL(target) {
@@ -93,6 +89,7 @@ func Discover(ctx context.Context, target, branch string) (Config, error) {
 		cfg.Remote = resolved
 	}
 	if branch == "" {
+		// Query the remote: a checkout's cached remote HEAD can be stale.
 		refs, err := osrun.Run(ctx, "", map[string]string{"GIT_TERMINAL_PROMPT": "0"}, "git", "ls-remote", "--symref", "--", cfg.Remote, "HEAD")
 		if err != nil {
 			return cfg, fmt.Errorf("cannot read repository's default branch; check Git access or use --branch: %w", err)
@@ -140,7 +137,11 @@ func isRemoteURL(value string) bool {
 	if u, err := url.Parse(value); err == nil && u.Scheme != "" {
 		return true
 	}
-	return strings.Contains(value, ":") && !filepath.IsAbs(value)
+	// Git recognizes SCP syntax only when no slash precedes the colon.
+	// Explicit paths such as ./published:mirror.git are local repositories.
+	colon := strings.IndexByte(value, ':')
+	slash := strings.IndexByte(value, '/')
+	return colon >= 0 && (slash < 0 || colon < slash) && !filepath.IsAbs(value)
 }
 func stateHome() (string, error) {
 	if value := os.Getenv("XDG_STATE_HOME"); value != "" {
