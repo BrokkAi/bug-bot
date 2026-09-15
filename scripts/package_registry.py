@@ -31,8 +31,26 @@ def npm_exists(package):
     record = fetch_json(f"https://registry.npmjs.org/{name}/{package['version']}")
     if record is None:
         return False
-    if record.get("name") != package["name"] or record.get("version") != package["version"] or record.get("dist", {}).get("integrity") != package["integrity"]:
+    if record.get("name") != package["name"] or record.get("version") != package["version"]:
         raise ValueError(f"published npm package differs from staged bytes: {package['name']}")
+    if "_path" not in package:
+        if record.get("dist", {}).get("integrity") != package["integrity"]:
+            raise ValueError(f"published npm package differs from staged bytes: {package['name']}")
+    else:
+        from release_preflight import snapshot
+        dist = record["dist"]
+        url = dist["tarball"]
+        if not url.startswith("https://registry.npmjs.org/"):
+            raise ValueError("unexpected registry tarball host")
+        with urllib.request.urlopen(url, timeout=60) as response:
+            data = response.read()
+        actual = "sha512-" + base64.b64encode(hashlib.sha512(data).digest()).decode()
+        if actual != dist["integrity"]:
+            raise ValueError("downloaded npm package fails its registry integrity")
+        # Compression may differ; payload bytes and permissions must not.
+        if snapshot(data) != snapshot(Path(package["_path"]).read_bytes()):
+            raise ValueError(f"published npm package differs from staged payload: {package['name']}")
+
     return True
 
 
@@ -54,6 +72,7 @@ def run(command, directory):
         integrity = "sha512-" + base64.b64encode(hashlib.sha512(data).digest()).decode()
         if release.digest(data) != package["sha256"] or integrity != package["integrity"]:
             raise ValueError(f"corrupt staged npm package: {package['filename']}")
+        package["_path"] = str(directory / "npm" / package["filename"])
     # Discover conflicts in every destination before making the first write.
     existing = {p["name"]: npm_exists(p) for p in packages}
     if command == "check":
