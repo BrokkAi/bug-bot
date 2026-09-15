@@ -15,6 +15,19 @@ import package_release as release
 REPO = 'BrokkAi/bug-bot'
 
 
+def check_subject(claims, repository):
+    owner_id, repo_id = str(repository['owner']['id']), str(repository['id'])
+    subjects = {
+        f'repo:{REPO}:environment:packages-publish',
+        f'repo:BrokkAi@{owner_id}/bug-bot@{repo_id}:environment:packages-publish',
+    }
+    if (claims.get('repository') != REPO or
+            str(claims.get('repository_owner_id')) != owner_id or
+            str(claims.get('repository_id')) != repo_id or
+            claims.get('sub') not in subjects):
+        raise ValueError('OIDC token does not identify this repository and packages-publish environment')
+
+
 def request(url, token, method='GET'):
     req = urllib.request.Request(url, data=b'{}' if method == 'POST' else None,
                                  headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}, method=method)
@@ -55,7 +68,8 @@ def npm():
     url = os.environ['ACTIONS_ID_TOKEN_REQUEST_URL'] + '&audience=npm:registry.npmjs.org'
     token = request(url, os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN'])['value']
     claims = json.loads(base64.urlsafe_b64decode(token.split('.')[1] + '==='))
-    if claims.get('sub') != f'repo:{REPO}:environment:packages-publish' or claims.get('sha') != release.commit():
+    check_subject(claims, gh(f'repos/{REPO}'))
+    if claims.get('sha') != release.commit():
         raise ValueError('OIDC token does not identify the exact commit and packages-publish environment')
     names = [f'{package_installers.NPM_ROOT}-{system}-{arch}' for system in ('linux', 'darwin') for arch in ('x64', 'arm64')]
     names.append(package_installers.NPM_ROOT)

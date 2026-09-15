@@ -21,6 +21,16 @@ def archive(payload=b'binary', mode=0o755, mtime=0):
 
 
 class ReleasePreflight(unittest.TestCase):
+    def test_oidc_subject_accepts_immutable_repository_ids_and_rejects_other_environments(self):
+        repository = {'id': 1360442595, 'owner': {'id': 204942796}}
+        claims = {'repository': 'BrokkAi/bug-bot', 'repository_id': '1360442595',
+                  'repository_owner_id': '204942796',
+                  'sub': 'repo:BrokkAi@204942796/bug-bot@1360442595:environment:packages-publish'}
+        authorization.check_subject(claims, repository)
+        claims['sub'] = claims['sub'].replace('packages-publish', 'other')
+        with self.assertRaisesRegex(ValueError, 'environment'):
+            authorization.check_subject(claims, repository)
+
     def test_rebuild_comparison_checks_payload_and_permissions_not_compressor(self):
         self.assertEqual(preflight.snapshot(archive(mtime=1)), preflight.snapshot(archive(mtime=2)))
         self.assertNotEqual(preflight.snapshot(archive()), preflight.snapshot(archive(payload=b'other')))
