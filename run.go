@@ -38,6 +38,22 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger, once bool) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	// Worker and library callers can bypass ReadConfig and discovery. Resolve
+	// their paths before creating state or deriving scan worktree directories.
+	for _, path := range []*string{&cfg.Directory, &cfg.StateDirectory} {
+		absolute, err := filepath.Abs(*path)
+		if err != nil {
+			return err
+		}
+		*path, err = canonical(absolute)
+		if err != nil {
+			return err
+		}
+	}
+	// Symlink resolution can reveal overlapping checkout and state paths.
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
 	if cfg.GitHubRepo() == "" {
 		return errors.New("GitHub repository required; set github.repo for a local mirror")
 	}
@@ -168,12 +184,6 @@ func (e engine) step(ctx context.Context, s *State, force bool) error {
 				return e.finish(s)
 			}
 		}
-		if s.Scan.Tries >= e.config.Attempts {
-			return errors.New("scan attempt budget exhausted; inspect status and use bbb retry")
-		}
-		if !force && s.Scan.RetryAt.After(e.now()) {
-			return nil
-		}
 	} else if !force && s.NextScan.After(e.now()) {
 		return nil
 	}
@@ -196,6 +206,16 @@ func (e engine) step(ctx context.Context, s *State, force bool) error {
 		}
 		if err := e.finish(s); err != nil {
 			return err
+		}
+	}
+	// Budgets and retry delays belong to the saved revision, not the repository.
+	// Fetch and invalidate old pending findings only after all unknown writes reconcile.
+	if s.Scan != nil {
+		if s.Scan.Tries >= e.config.Attempts {
+			return errors.New("scan attempt budget exhausted; inspect status and use bbb retry")
+		}
+		if !force && s.Scan.RetryAt.After(e.now()) {
+			return nil
 		}
 	}
 	if s.Scan == nil {

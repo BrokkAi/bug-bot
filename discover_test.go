@@ -68,6 +68,35 @@ func TestDiscoveryDefaultsAndPersistentWorkspace(t *testing.T) {
 		t.Fatal("discovery changed source checkout")
 	}
 }
+func TestDiscoveryChangedAdvertisedDefaultBranch(t *testing.T) {
+	_, remote := discoveryRepo(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	checkout := filepath.Join(canonicalTestDir(t), "checkout")
+	localGit(t, filepath.Dir(checkout), "clone", remote, checkout)
+	const cachedHEAD = "refs/remotes/origin/main"
+	if got := localGit(t, checkout, "symbolic-ref", "refs/remotes/origin/HEAD"); got != cachedHEAD {
+		t.Fatalf("initial cached HEAD = %q, want %q", got, cachedHEAD)
+	}
+	localGit(t, remote, "update-ref", "refs/heads/new-default", "refs/heads/main")
+	localGit(t, remote, "symbolic-ref", "HEAD", "refs/heads/new-default")
+	for _, target := range []string{checkout, "file://" + remote, remote} {
+		cfg, err := Discover(context.Background(), target, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Branch != "new-default" {
+			t.Errorf("Discover(%q) branch = %q, want new-default", target, cfg.Branch)
+		}
+		cfg, err = Discover(context.Background(), target, "main")
+		if err != nil || cfg.Branch != "main" {
+			t.Errorf("explicit override: branch = %q, error = %v", cfg.Branch, err)
+		}
+	}
+	if got := localGit(t, checkout, "symbolic-ref", "refs/remotes/origin/HEAD"); got != cachedHEAD {
+		t.Fatalf("discovery changed cached HEAD to %q", got)
+	}
+}
+
 func TestDiscoveryFromCwdAndMissingRemote(t *testing.T) {
 	source, _ := discoveryRepo(t)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
