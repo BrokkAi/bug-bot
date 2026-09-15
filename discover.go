@@ -137,7 +137,11 @@ func isRemoteURL(value string) bool {
 	if u, err := url.Parse(value); err == nil && u.Scheme != "" {
 		return true
 	}
-	return strings.Contains(value, ":") && !filepath.IsAbs(value)
+	// Git recognizes SCP syntax only when no slash precedes the colon.
+	// Explicit paths such as ./published:mirror.git are local repositories.
+	colon := strings.IndexByte(value, ':')
+	slash := strings.IndexByte(value, '/')
+	return colon >= 0 && (slash < 0 || colon < slash) && !filepath.IsAbs(value)
 }
 func stateHome() (string, error) {
 	if value := os.Getenv("XDG_STATE_HOME"); value != "" {

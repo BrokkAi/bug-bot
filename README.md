@@ -208,7 +208,9 @@ TLS transport to be added later without changing worker semantics.
 ## Optional configuration
 
 `bbb --config bug-bot.json` loads a strict JSON object. No file is loaded or
-generated implicitly. Paths are resolved relative to the configuration file.
+generated implicitly. Paths, including local mirror remotes such as
+`./mirror.git` or `./published:mirror.git`, are resolved relative to the
+configuration file.
 See [bug-bot.example.json](bug-bot.example.json).
 
 ```json
