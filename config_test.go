@@ -9,30 +9,41 @@ import (
 )
 
 func TestConfiguredLocalMirror(t *testing.T) {
-	for _, cwd := range []string{"config directory", "other directory"} {
-		t.Run(cwd, func(t *testing.T) {
-			_, remote := discoveryRepo(t)
-			base := filepath.Dir(remote)
-			if cwd == "other directory" {
-				t.Chdir(canonicalTestDir(t))
-			} else {
-				t.Chdir(base)
-			}
-			p := filepath.Join(base, "config.json")
-			writeTestFile(t, p, `{"remote":"./published.git","branch":"main","github":{"repo":"o/r"}}`)
-			cfg, err := ReadConfig(p)
-			if err != nil {
-				t.Fatal(err)
-			}
-			g := checkout{cfg}
-			if err := g.open(context.Background()); err != nil {
-				t.Fatalf("open configured mirror: %v", err)
-			}
-			if cfg.Remote != remote {
-				t.Fatalf("remote = %q, want %q", cfg.Remote, remote)
-			}
-			if err := g.open(context.Background()); err != nil {
-				t.Fatalf("reopen configured mirror: %v", err)
+	for _, name := range []string{"published.git", "published:mirror.git"} {
+		t.Run(name, func(t *testing.T) {
+			for _, cwd := range []string{"config directory", "other directory"} {
+				t.Run(cwd, func(t *testing.T) {
+					_, remote := discoveryRepo(t)
+					base := filepath.Dir(remote)
+					renamed := filepath.Join(base, name)
+					if remote != renamed {
+						if err := os.Rename(remote, renamed); err != nil {
+							t.Fatal(err)
+						}
+					}
+					remote = renamed
+					if cwd == "other directory" {
+						t.Chdir(canonicalTestDir(t))
+					} else {
+						t.Chdir(base)
+					}
+					p := filepath.Join(base, "config.json")
+					writeTestFile(t, p, `{"remote":"./`+name+`","branch":"main","github":{"repo":"o/r"}}`)
+					cfg, err := ReadConfig(p)
+					if err != nil {
+						t.Fatal(err)
+					}
+					g := checkout{cfg}
+					if err := g.open(context.Background()); err != nil {
+						t.Fatalf("open configured mirror: %v", err)
+					}
+					if cfg.Remote != remote {
+						t.Fatalf("remote = %q, want %q", cfg.Remote, remote)
+					}
+					if err := g.open(context.Background()); err != nil {
+						t.Fatalf("reopen configured mirror: %v", err)
+					}
+				})
 			}
 		})
 	}
@@ -40,7 +51,8 @@ func TestConfiguredLocalMirror(t *testing.T) {
 
 func TestConfigRemotePaths(t *testing.T) {
 	base := canonicalTestDir(t)
-	for _, remote := range []string{"mirror.git", "./mirror.git", "../mirror.git", filepath.Join(base, "mirror.git"), "https://github.com/o/r.git", "ssh://git@github.com/o/r.git", "git@github.com:o/r.git", "github.com:o/r.git", "file:///tmp/mirror.git", "ext::helper"} {
+	localRemotes := []string{"mirror.git", "./mirror.git", "../mirror.git", "./published:mirror.git", "../published:mirror.git", "mirrors/published:mirror.git"}
+	for _, remote := range append(localRemotes, filepath.Join(base, "mirror.git"), "https://github.com/o/r.git", "ssh://git@github.com/o/r.git", "git@github.com:o/r.git", "github.com:o/r.git", "file:///tmp/mirror.git", "ext::helper") {
 		t.Run(remote, func(t *testing.T) {
 			raw, err := json.Marshal(map[string]string{"remote": remote})
 			if err != nil {
@@ -53,8 +65,10 @@ func TestConfigRemotePaths(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := remote
-			if remote == "mirror.git" || remote == "./mirror.git" || remote == "../mirror.git" {
-				want = filepath.Join(base, remote)
+			for _, local := range localRemotes {
+				if remote == local {
+					want = filepath.Join(base, remote)
+				}
 			}
 			if cfg.Remote != want {
 				t.Fatalf("remote = %q, want %q", cfg.Remote, want)
