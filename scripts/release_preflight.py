@@ -123,9 +123,25 @@ def tag_version(tag, sha, required=False):
         raise ValueError('release tag points at a different commit')
 
 
+def release_record(tag):
+    record = api(f'releases/tags/{tag}', missing=True)
+    if record:
+        return record
+    # GitHub's release-by-tag endpoint hides drafts, even from their creator.
+    # The authorized releases list includes them so a failed upload can resume.
+    for page in range(1, 100):
+        records = api(f'releases?per_page=100&page={page}')
+        for candidate in records:
+            if candidate['tag_name'] == tag:
+                return candidate
+        if len(records) < 100:
+            break
+    return None
+
+
 def github_version(tag, sha, required=False, strict=False):
     tag_version(tag, sha, required)
-    record = api(f'releases/tags/{tag}', missing=True)
+    record = release_record(tag)
     if not record:
         if required:
             raise ValueError('GitHub release missing')
@@ -191,7 +207,7 @@ def publish(tag, sha):
     release_authorization.npm()
     if not record:
         gh('release', 'create', tag, '--repo', f'github.com/{REPO}', '--verify-tag', '--draft', '--title', f'Brokk Bug Bot {tag}', '--generate-notes')
-        record = api(f'releases/tags/{tag}')
+        record = release_record(tag)
     present = {a['name'] for a in record['assets']}
     for path in sorted(NATIVE.iterdir()):
         if path.name not in present:
