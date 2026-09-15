@@ -2,7 +2,6 @@ package bugbot
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 )
@@ -76,6 +75,26 @@ func (e engine) report(s *State, phase, task string) {
 // Completed candidates do not store their original commit. Do not label old
 // findings with the current scan's commit or display publication request markers.
 func findingDetails(c *Candidate) string {
+	var sections []string
+	for _, section := range findingDetailSections(c) {
+		sections = append(sections, section.title+"\n"+section.body)
+	}
+	return strings.Join(sections, "\n\n")
+}
+
+type findingDetailSection struct {
+	title, body string
+}
+
+func findingDetailSections(c *Candidate) []findingDetailSection {
 	f := c.Finding
-	return fmt.Sprintf("Root cause\n%s\n\nFiles\n%s\n\nReproduction\n%s\n\nExpected\n%s\n\nActual\n%s\n\nEvidence\n%s\n\nReview\n%s", f.RootCause, strings.Join(f.Files, "\n"), f.Reproduction, f.Expected, f.Actual, strings.Join(f.Evidence, "\n"), c.Review)
+	return []findingDetailSection{
+		{"Root cause", f.RootCause},
+		{"Files", strings.Join(f.Files, "\n")},
+		{"Reproduction", f.Reproduction},
+		{"Expected", f.Expected},
+		{"Actual", f.Actual},
+		{"Evidence", strings.Join(f.Evidence, "\n")},
+		{"Review", c.Review},
+	}
 }

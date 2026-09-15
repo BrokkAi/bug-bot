@@ -52,15 +52,19 @@ func executeWithRun(ctx context.Context, args []string, log *slog.Logger, run ru
 			return versionCommand(args[1:], os.Stdout)
 		case "worker":
 			return workerCommand(ctx, args[1:], buildVersion())
-		case "run", "once", "status", "retry":
+		case "run", "once", "status", "report", "retry":
 			mode = args[0]
 			args = args[1:]
 		}
 	}
 	fs := flag.NewFlagSet("bbb", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "Usage: bbb [run|once|status|retry|worker|version] [repository path or URL] [options]\n\nFind reproducible bugs and file new GitHub issues without duplicates. No config file is required.")
+		fmt.Fprintln(fs.Output(), "Usage: bbb [run|once|status|report|retry|worker|version] [repository path or URL] [options]\n\nFind reproducible bugs and file new GitHub issues without duplicates. No config file is required.")
 		fs.PrintDefaults()
+	}
+	var reportStatus string
+	if mode == "report" {
+		fs.StringVar(&reportStatus, "status", "", "only findings with this saved status: pending, posting, submitted, duplicate, uncertain, invalid, dry_run, stale")
 	}
 	file := fs.String("config", "", "optional JSON configuration")
 	branch := fs.String("branch", "", "base branch (default: repository default)")
@@ -158,6 +162,9 @@ func executeWithRun(ctx context.Context, args []string, log *slog.Logger, run ru
 		e := json.NewEncoder(os.Stdout)
 		e.SetIndent("", "  ")
 		return e.Encode(s)
+	}
+	if mode == "report" {
+		return bot.Report(cfg, reportStatus, os.Stdout)
 	}
 	if err := bot.ResolveAgent(&cfg, *file == "" && *agent == ""); err != nil {
 		return err
