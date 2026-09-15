@@ -140,6 +140,76 @@ func fixture(t *testing.T) (engine, *State, *fakeSource, *fakeAgent, string) {
 	e := engine{config: cfg, source: f, log: slog.New(slog.NewTextHandler(io.Discard, nil)), agent: func(Config) Agent { return a }, now: time.Now}
 	return e, newState(cfg), f, a, source
 }
+
+func TestRunSymlinkDirectory(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existing=%t", existing), func(t *testing.T) {
+			e, _, _, _, _ := fixture(t)
+			t.Setenv("XDG_STATE_HOME", canonicalTestDir(t))
+			if existing {
+				if err := (checkout{e.config}).open(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			alias := filepath.Join(canonicalTestDir(t), "alias")
+			if err := os.Symlink(filepath.Dir(e.config.Directory), alias); err != nil {
+				t.Fatal(err)
+			}
+			cfg := e.config
+			cfg.Directory = filepath.Join(alias, "checkout")
+			cfg.StateDirectory = filepath.Join(alias, "state")
+			if err := cfg.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			reached := false
+			ctx = WithProgress(ctx, func(p Progress) {
+				if p.Phase == "attempt" {
+					reached = true
+					cancel() // Stop before accessing GitHub or starting an agent.
+				}
+			})
+			err := Run(ctx, cfg, e.log, true)
+			if !reached || !errors.Is(err, context.Canceled) {
+				t.Fatalf("expected cancellation after workspace preparation, reached=%t: %v", reached, err)
+			}
+			saved, err := ReadState(e.config)
+			if err != nil || saved == nil || saved.Scan == nil {
+				t.Fatalf("missing saved scan: %+v, %v", saved, err)
+			}
+			if filepath.Dir(saved.Scan.Directory) != e.config.Directory+"-scans" {
+				t.Fatalf("scan path is not canonical: %s", saved.Scan.Directory)
+			}
+			w := checkout{e.config}
+			w.config.Directory = saved.Scan.Directory
+			if err := w.verify(context.Background(), saved.Scan); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestRunSymlinkOverlapRejected(t *testing.T) {
+	e, _, _, _, _ := fixture(t)
+	alias := filepath.Join(canonicalTestDir(t), "alias")
+	if err := os.Symlink(filepath.Dir(e.config.Directory), alias); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"checkout", "checkout-scans"} {
+		t.Run(name, func(t *testing.T) {
+			cfg := e.config
+			cfg.StateDirectory = filepath.Join(alias, name, "state")
+			if err := cfg.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			if err := Run(context.Background(), cfg, e.log, true); err == nil || !strings.Contains(err.Error(), "must not overlap") {
+				t.Fatalf("expected resolved path overlap rejection, got %v", err)
+			}
+		})
+	}
+}
+
 func TestScanPublishAndRestartDoesNotDuplicate(t *testing.T) {
 	e, s, f, a, source := fixture(t)
 	writeTestFile(t, filepath.Join(source, "unfinished.txt"), "user work")

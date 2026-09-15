@@ -30,6 +30,22 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger, once bool) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	// Worker and library callers can bypass ReadConfig and discovery. Resolve
+	// their paths before creating state or deriving scan worktree directories.
+	for _, path := range []*string{&cfg.Directory, &cfg.StateDirectory} {
+		absolute, err := filepath.Abs(*path)
+		if err != nil {
+			return err
+		}
+		*path, err = canonical(absolute)
+		if err != nil {
+			return err
+		}
+	}
+	// Symlink resolution can reveal overlapping checkout and state paths.
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
 	if cfg.GitHubRepo() == "" {
 		return errors.New("GitHub repository required; set github.repo for a local mirror")
 	}
