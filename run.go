@@ -112,8 +112,8 @@ func (e engine) execute(ctx context.Context, s *State, a Agent, prompt string) (
 		delay := startupRetryDelays[i]
 		e.log.Warn("Agent failed to start; retrying", "error", err, "delay", delay, "retry", i+1, "retries", len(startupRetryDelays))
 		e.report(s, "attempt", fmt.Sprintf("Agent failed to start; retrying in %s (%d/%d)", delay, i+1, len(startupRetryDelays)))
-		if err := e.sleep(ctx, delay); err != nil {
-			return "", err
+		if sleepErr := e.sleep(ctx, delay); sleepErr != nil {
+			return "", errors.Join(err, sleepErr)
 		}
 	}
 }

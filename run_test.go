@@ -420,6 +420,9 @@ func TestStartupRetryStopsWhenCancelled(t *testing.T) {
 	if err := e.step(ctx, s, true); !errors.Is(err, context.Canceled) {
 		t.Fatalf("got %v", err)
 	}
+	if s.Scan.Tries != 0 {
+		t.Fatalf("cancelled startup retry consumed attempt: %+v", s.Scan)
+	}
 }
 func TestBatchDuplicatesAndZeroFindings(t *testing.T) {
 	for _, empty := range []bool{true, false} {
