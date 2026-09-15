@@ -22,6 +22,17 @@ def archive(payload=b'binary', mode=0o755, mtime=0):
 
 
 class ReleasePreflight(unittest.TestCase):
+    def test_private_draft_is_found_when_release_by_tag_returns_404(self):
+        draft = {'tag_name': 'v0.3.4', 'draft': True, 'assets': []}
+        def fake_api(path, missing=False):
+            if path == 'releases/tags/v0.3.4':
+                self.assertTrue(missing)
+                return None
+            self.assertEqual(path, 'releases?per_page=100&page=1')
+            return [draft]
+        with patch.object(preflight, 'api', side_effect=fake_api):
+            self.assertIs(preflight.release_record('v0.3.4'), draft)
+
     def test_npm_exchange_accepts_numeric_unix_expiry(self):
         expiry = datetime.now(timezone.utc) + timedelta(hours=1)
         self.assertEqual(authorization.exchange_expiry(int(expiry.timestamp())).timestamp(), int(expiry.timestamp()))
