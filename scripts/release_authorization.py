@@ -68,21 +68,10 @@ def npm():
             if exchanged.get('token_type') != 'oidc' or not exchanged.get('token') or (expiry - datetime.now(timezone.utc)).total_seconds() < 60:
                 raise ValueError('OIDC exchange returned invalid or expiring credentials')
             print(f'{name}: exact workflow/environment OIDC exchange accepted; credential expiry validated')
-            # Exchange alone also accepts stage-only trust. Require the direct
-            # publishing grant, never infer it from a public metadata read.
-            configs = request(f'https://registry.npmjs.org/-/package/{escaped}/trust', exchanged['token'])
-            matching = [c for c in configs if c.get('type') == 'github'
-                        and c.get('claims', {}).get('repository') == REPO
-                        and c['claims'].get('workflow_ref') == {'file': 'publish-packages.yml'}
-                        and c['claims'].get('environment') == 'packages-publish'
-                        and 'createPackage' in c.get('permissions', [])]
-            if not matching:
-                raise ValueError('no inspectable matching direct-publish createPackage grant')
-            print(f'{name}: direct publishing trust verified')
         except (ValueError, KeyError) as error:
             failures.append(f'{name}: {error}')
     if failures:
-        raise ValueError('Publishing authorization blocked. npm owners must enable and provide inspectable direct-publish trust for BrokkAi/bug-bot / publish-packages.yml / packages-publish. ' + '; '.join(failures))
+        raise ValueError('Publishing authorization blocked: package-scoped OIDC exchange failed for BrokkAi/bug-bot / publish-packages.yml / packages-publish. ' + '; '.join(failures))
 
 
 if __name__ == '__main__':

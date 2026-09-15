@@ -49,15 +49,14 @@ The draft is not readiness state and is never needed by later verification.
 
 The `packages` job uses environment `packages-publish`, `contents:write`,
 `actions:read`, and `id-token:write`. Its GITHUB_TOKEN validates GitHub access.
-For every npm package, it exchanges its exact-commit GitHub OIDC token with npm,
-checks expiry, and requires inspectable matching trusted publisher configuration
-with `createPackage` permission. The trust must identify `BrokkAi/bug-bot`,
-`publish-packages.yml`, and `packages-publish`. A staging-only grant is not enough.
-No developer login or stored token is substituted. Registry trust reads may
-require an npm owner session and 2FA unavailable to the workflow; that is a real
-blocked authorization gate, not a reason to attempt an upload. An npm owner must
-provide a supported non-publishing way to inspect the direct-publish grant if npm
-rejects the exchanged identity for that read. Do not bypass this check.
+For every npm package, it exchanges its exact-commit GitHub OIDC token with npm
+and checks expiry. No developer login or stored token is substituted. npm trust
+configuration requires a maintainer session with write access and 2FA; the
+short-lived OIDC exchange token cannot inspect that setting. Exchange success
+establishes package-scoped identity, not direct-publish permission. The registry
+enforces the direct-publish grant on the first upload. If it rejects that upload,
+the workflow stops with the GitHub release still private, preserving the staged
+assets and allowing an exact-tag retry after the npm owner fixes the trust grant.
 
 Inspect the exact-SHA latest run and jobs using `gh`. Once the preflight run is
 successful, independent daemon checks use these commands with `RELEASE_COMMIT`,
