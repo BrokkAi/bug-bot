@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -81,12 +82,18 @@ type fakeAgent struct {
 	findings       []Finding
 	onReview       func([]Issue) Review
 	onScan         func()
+	onExecute      func() error
 	err            error
 }
 
 func (a *fakeAgent) Execute(_ context.Context, prompt string) (string, error) {
 	if a.err != nil {
 		return "", a.err
+	}
+	if a.onExecute != nil {
+		if err := a.onExecute(); err != nil {
+			return "", err
+		}
 	}
 	if strings.Contains(prompt, "Scan context (data):") {
 		a.scans++
@@ -137,7 +144,7 @@ func fixture(t *testing.T) (engine, *State, *fakeSource, *fakeAgent, string) {
 	}
 	f := &fakeSource{cfg: cfg}
 	a := &fakeAgent{}
-	e := engine{config: cfg, source: f, log: slog.New(slog.NewTextHandler(io.Discard, nil)), agent: func(Config) Agent { return a }, now: time.Now}
+	e := engine{config: cfg, source: f, log: slog.New(slog.NewTextHandler(io.Discard, nil)), agent: func(Config) Agent { return a }, now: time.Now, sleep: func(context.Context, time.Duration) error { return nil }}
 	return e, newState(cfg), f, a, source
 }
 
@@ -427,11 +434,64 @@ func TestChangedSourceAndMissingSourceRefused(t *testing.T) {
 func TestSetupFailureDoesNotConsumeAttempt(t *testing.T) {
 	e, s, _, a, _ := fixture(t)
 	a.err = &runner.SetupError{Err: errors.New("missing model")}
+	var slept []time.Duration
+	e.sleep = func(_ context.Context, d time.Duration) error { slept = append(slept, d); return nil }
 	if err := e.step(context.Background(), s, true); err == nil {
 		t.Fatal("setup error hidden")
 	}
 	if s.Scan.Tries != 0 {
 		t.Fatal("setup failure consumed attempt")
+	}
+	if len(slept) != len(startupRetryDelays) {
+		t.Fatalf("startup failure retried %d times, want %d", len(slept), len(startupRetryDelays))
+	}
+}
+func TestTransientStartupFailureRecovers(t *testing.T) {
+	e, s, f, a, _ := fixture(t)
+	failures := 2
+	a.onExecute = func() error {
+		if failures > 0 {
+			failures--
+			return &runner.SetupError{Err: errors.New("Codex process has exited with code 1: failed to initialize sqlite state runtime")}
+		}
+		return nil
+	}
+	var slept []time.Duration
+	e.sleep = func(_ context.Context, d time.Duration) error { slept = append(slept, d); return nil }
+	if err := e.step(context.Background(), s, true); err != nil {
+		t.Fatal(err)
+	}
+	if f.creates != 1 || len(slept) != 2 || slept[0] != startupRetryDelays[0] || slept[1] != startupRetryDelays[1] {
+		t.Fatalf("creates %d, slept %v", f.creates, slept)
+	}
+}
+func TestStartupRetrySkipsPermanentAndPromptFailures(t *testing.T) {
+	for _, err := range []error{
+		&runner.SetupError{Err: fmt.Errorf("launch ACP agent: %w", &exec.Error{Name: "codex-acp", Err: exec.ErrNotFound})},
+		errors.New("prompt failed after start"),
+	} {
+		e, s, _, a, _ := fixture(t)
+		a.err = err
+		slept := 0
+		e.sleep = func(context.Context, time.Duration) error { slept++; return nil }
+		if e.step(context.Background(), s, true) == nil {
+			t.Fatal("error hidden")
+		}
+		if slept != 0 {
+			t.Fatalf("retried %v", err)
+		}
+	}
+}
+func TestStartupRetryStopsWhenCancelled(t *testing.T) {
+	e, s, _, a, _ := fixture(t)
+	a.err = &runner.SetupError{Err: errors.New("exited")}
+	ctx, cancel := context.WithCancel(context.Background())
+	e.sleep = func(ctx context.Context, _ time.Duration) error { cancel(); return ctx.Err() }
+	if err := e.step(ctx, s, true); !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v", err)
+	}
+	if s.Scan.Tries != 0 {
+		t.Fatalf("cancelled startup retry consumed attempt: %+v", s.Scan)
 	}
 }
 func TestBatchDuplicatesAndZeroFindings(t *testing.T) {

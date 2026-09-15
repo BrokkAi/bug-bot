@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -17,12 +18,19 @@ import (
 	"github.com/BrokkAi/bug-bot/internal/osrun"
 )
 
+// Agent startup can fail transiently: the ACP process may lose a race for shared
+// state (Codex keeps one SQLite database per home) or exit while the host is busy.
+// Nothing has been prompted yet, so a quick retry is safe and cheap. The delays
+// total under two minutes, well inside the attempt timeout.
+var startupRetryDelays = []time.Duration{5 * time.Second, 15 * time.Second, 45 * time.Second}
+
 type engine struct {
 	config  Config
 	source  issueSource
 	log     *slog.Logger
 	agent   func(Config) Agent
 	now     func() time.Time
+	sleep   func(context.Context, time.Duration) error
 	observe func(Progress)
 }
 
@@ -65,7 +73,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger, once bool) error {
 		s = newState(cfg)
 	}
 	observe, _ := ctx.Value(progressKey{}).(func(Progress))
-	e := engine{config: cfg, source: githubClient{cfg}, log: log, agent: func(c Config) Agent { return agentProcess{c, log} }, now: time.Now, observe: observe}
+	e := engine{config: cfg, source: githubClient{cfg}, log: log, agent: func(c Config) Agent { return agentProcess{c, log} }, now: time.Now, sleep: pause, observe: observe}
 	e.report(s, "starting", "Loading saved scan")
 	for {
 		err := e.step(ctx, s, once)
@@ -105,6 +113,24 @@ func pause(ctx context.Context, d time.Duration) error {
 		return ctx.Err()
 	case <-timer.C:
 		return nil
+	}
+}
+
+// execute prompts the agent, retrying startup failures that occur before any
+// prompt is sent. Missing executables are permanent and fail immediately.
+func (e engine) execute(ctx context.Context, s *State, a Agent, prompt string) (string, error) {
+	for i := 0; ; i++ {
+		text, err := a.Execute(ctx, prompt)
+		var setup *runner.SetupError
+		if err == nil || !errors.As(err, &setup) || errors.Is(err, exec.ErrNotFound) || i >= len(startupRetryDelays) || ctx.Err() != nil {
+			return text, err
+		}
+		delay := startupRetryDelays[i]
+		e.log.Warn("Agent failed to start; retrying", "error", err, "delay", delay, "retry", i+1, "retries", len(startupRetryDelays))
+		e.report(s, "attempt", fmt.Sprintf("Agent failed to start; retrying in %s (%d/%d)", delay, i+1, len(startupRetryDelays)))
+		if sleepErr := e.sleep(ctx, delay); sleepErr != nil {
+			return "", errors.Join(err, sleepErr)
+		}
 	}
 }
 func (e engine) save(s *State) error {
@@ -249,7 +275,7 @@ func (e engine) attempt(ctx context.Context, s *State, g, w checkout) error {
 		}
 		e.report(s, "investigating", "Investigating new bugs")
 		e.log.Info("Investigating new bugs", "commit", s.Scan.Commit, "issues", len(issues), "directory", w.config.Directory)
-		text, err := a.Execute(ctx, scanPrompt(e.config, s, path))
+		text, err := e.execute(ctx, s, a, scanPrompt(e.config, s, path))
 		if err != nil {
 			return err
 		}
@@ -353,7 +379,7 @@ func (e engine) reviewAndPublish(ctx context.Context, s *State, w checkout, a Ag
 			chunks := reviewChunks(remaining)
 			for index, chunk := range chunks {
 				e.report(s, "reviewing", fmt.Sprintf("%s (batch %d/%d)", c.Finding.Title, index+1, len(chunks)))
-				text, err := a.Execute(ctx, reviewPrompt(c.Finding, s.Scan.Commit, chunk, !validated))
+				text, err := e.execute(ctx, s, a, reviewPrompt(c.Finding, s.Scan.Commit, chunk, !validated))
 				if err != nil {
 					return err
 				}

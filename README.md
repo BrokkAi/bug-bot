@@ -145,8 +145,10 @@ and another scan **30 minutes after completion**, even if the commit is unchange
 Recent summaries guide exploration; this is not a claim of exhaustive coverage.
 `once` runs or resumes one scan and exits. Failed scans retain their candidates,
 workspace, and diagnostics; retries wait at least 15 minutes and run on the next
-poll, with three attempts before requiring `retry`. Agent setup errors stop the
-daemon without consuming an attempt. After reconciling any uncertain issue
+poll, with three attempts before requiring `retry`. Agent startup failures are
+retried in place three times within about a minute, since nothing has been
+prompted yet; persistent setup errors then stop the daemon without consuming
+an attempt. After reconciling any uncertain issue
 publications, each poll or one-shot invocation checks for an advanced branch
 before enforcing the saved revision’s attempt budget or retry delay. A new
 revision archives pending findings as stale, retains their evidence and workspace,
