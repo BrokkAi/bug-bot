@@ -142,12 +142,6 @@ func (e engine) step(ctx context.Context, s *State, force bool) error {
 				return e.finish(s)
 			}
 		}
-		if s.Scan.Tries >= e.config.Attempts {
-			return errors.New("scan attempt budget exhausted; inspect status and use bbb retry")
-		}
-		if !force && s.Scan.RetryAt.After(e.now()) {
-			return nil
-		}
 	} else if !force && s.NextScan.After(e.now()) {
 		return nil
 	}
@@ -170,6 +164,16 @@ func (e engine) step(ctx context.Context, s *State, force bool) error {
 		}
 		if err := e.finish(s); err != nil {
 			return err
+		}
+	}
+	// Budgets and retry delays belong to the saved revision, not the repository.
+	// Fetch and invalidate old pending findings only after all unknown writes reconcile.
+	if s.Scan != nil {
+		if s.Scan.Tries >= e.config.Attempts {
+			return errors.New("scan attempt budget exhausted; inspect status and use bbb retry")
+		}
+		if !force && s.Scan.RetryAt.After(e.now()) {
+			return nil
 		}
 	}
 	if s.Scan == nil {
